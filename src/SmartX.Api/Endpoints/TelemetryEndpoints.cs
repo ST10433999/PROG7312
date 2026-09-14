@@ -21,17 +21,19 @@ public static class TelemetryEndpoints
             if (errors.Count > 0) return Results.ValidationProblem(errors);
             try { return Results.Ok(state.Ingest(req)); }
             catch (KeyNotFoundException ex) { return Results.NotFound(new ProblemDetails { Title = ex.Message }); }
+            catch (ArgumentException ex) { return Results.BadRequest(new ProblemDetails { Title = "Payload rejected", Detail = ex.Message, Status = 400 }); }
         }).WithSummary("Ingest one reading. The API wraps it in TelemetryPacket<float|int|bool> and scores it against the node's baseline.");
 
         g.MapPost("/batch", (List<TelemetryIngestRequest> batch, GatewayState state) =>
         {
             var results = new List<TelemetryIngestResult>(batch.Count);
-            var failed = 0;
+            var rejected = new List<object>();
             foreach (var r in batch)
             {
-                try { results.Add(state.Ingest(r)); } catch { failed++; }
+                try { results.Add(state.Ingest(r)); }
+                catch (Exception ex) when (ex is KeyNotFoundException or ArgumentException) { rejected.Add(new { r.MacAddress, reason = ex.Message }); }
             }
-            return Results.Ok(new { accepted = results.Count, failed, results });
+            return Results.Ok(new { accepted = results.Count, failed = rejected.Count, rejected, results });
         }).WithSummary("Ingest a burst of readings.");
 
         g.MapGet("/{mac}/recent", (string mac, GatewayState state) =>
@@ -49,6 +51,7 @@ public static class TelemetryEndpoints
         {
             mac = GatewayState.NormaliseMac(mac);
             if (!state.Sensors.TryGetValue(mac, out var s)) return Results.NotFound();
+            state.FlushPending();   // include readings ingested since the last batch flush
             object history = s.Payload switch
             {
                 PayloadKind.Float => state.EnvironmentalHistory.FlattenFor(mac).Select(p => new { p.Timestamp, value = (double)p.Value }),
@@ -58,12 +61,16 @@ public static class TelemetryEndpoints
             return Results.Ok(history);
         }).WithSummary("Historical packets for one node, flattened from the jagged batch store into a List<T>.");
 
-        g.MapGet("/batches", (GatewayState state) => Results.Ok(new
+        g.MapGet("/batches", (GatewayState state) =>
         {
+            state.FlushPending();
+            return Results.Ok(new
+            {
             environmental = Describe(state.EnvironmentalHistory),
             power = Describe(state.PowerHistory),
             actuator = Describe(state.ActuatorHistory)
-        })).WithSummary("Shape of the jagged historical arrays and timing of the transfer into List<T>.");
+            });
+        }).WithSummary("Shape of the jagged historical arrays and timing of the transfer into List<T>.");
 
         g.MapGet("/aggregate-demo", (GatewayState state, string? left, string? right) =>
         {

@@ -131,7 +131,7 @@ else if (_error is not null)
             }
             else
             {
-                <input type="number" step="any" @bind="_simValue" style="width:140px" placeholder="value" />
+                <input type="number" step="@(_selected.Payload == PayloadKind.Int ? "1" : "any")" @bind="_simValue" style="width:140px" placeholder="value" />
             }
             <button class="btn primary sm" @onclick="Simulate" disabled="@_busy">@(_busy ? "Sending…" : "Send packet")</button>
         </div>

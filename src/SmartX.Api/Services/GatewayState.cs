@@ -78,15 +78,62 @@ public sealed class GatewayState
         if (!Channels.TryGetValue(mac, out var channel))
             throw new KeyNotFoundException($"Sensor {mac} is not registered.");
 
+        // No type coercion on the ingestion path: the packet kind must match the sensor's registered payload.
+        if (request.Kind != channel.Profile.Payload)
+            throw new ArgumentException($"Sensor {mac} publishes {channel.Profile.Payload} packets; received {request.Kind}.");
+        if (request.Kind == PayloadKind.Int && request.Value is { } v && v != Math.Floor(v))
+            throw new ArgumentException($"Sensor {mac} publishes integer packets; {v} has a fractional part.");
+        if (request.Kind == PayloadKind.Bool && request.State is null)
+            throw new ArgumentException($"Sensor {mac} publishes boolean packets; 'state' is required.");
+
         var result = channel.Ingest(request);
         AfterIngest(channel, result);
+        RecordHistory(channel);
         return result;
     }
 
     public void IngestTyped<T>(TelemetryPacket<T> packet) where T : struct
     {
         if (Channels.TryGetValue(packet.MacAddress, out var ch) && ch is NodeChannel<T> typed)
+        {
             AfterIngest(typed, typed.Push(packet));
+            RecordHistory(typed);
+        }
+    }
+
+    // ------------------------------------------------------------------ live → historical batches
+    // Live packets accumulate in a raw pending array per payload type and are flushed into the
+    // jagged HistoricalBatchStore<T> as one batch every PendingBatchSize packets (or on demand),
+    // so the history a user reads back includes readings ingested after start-up.
+    public const int PendingBatchSize = 250;
+    private readonly List<TelemetryPacket<float>> _pendingFloat = new();
+    private readonly List<TelemetryPacket<int>> _pendingInt = new();
+    private readonly List<TelemetryPacket<bool>> _pendingBool = new();
+    private readonly object _pendingLock = new();
+
+    private void RecordHistory(NodeChannel channel)
+    {
+        lock (_pendingLock)
+        {
+            switch (channel)
+            {
+                case NodeChannel<float> f when f.Window.Latest is { } p: _pendingFloat.Add(p); break;
+                case NodeChannel<int> i when i.Window.Latest is { } p: _pendingInt.Add(p); break;
+                case NodeChannel<bool> b when b.Window.Latest is { } p: _pendingBool.Add(p); break;
+            }
+            if (_pendingFloat.Count + _pendingInt.Count + _pendingBool.Count >= PendingBatchSize)
+                FlushPendingUnsafe();
+        }
+    }
+
+    /// <summary>Moves every pending live packet into the jagged batch stores.</summary>
+    public void FlushPending() { lock (_pendingLock) FlushPendingUnsafe(); }
+
+    private void FlushPendingUnsafe()
+    {
+        if (_pendingFloat.Count > 0) { EnvironmentalHistory.AddBatch(_pendingFloat.ToArray()); _pendingFloat.Clear(); }
+        if (_pendingInt.Count > 0) { PowerHistory.AddBatch(_pendingInt.ToArray()); _pendingInt.Clear(); }
+        if (_pendingBool.Count > 0) { ActuatorHistory.AddBatch(_pendingBool.ToArray()); _pendingBool.Clear(); }
     }
 
     private void AfterIngest(NodeChannel channel, TelemetryIngestResult result)
