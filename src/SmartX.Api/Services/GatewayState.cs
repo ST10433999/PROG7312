@@ -30,6 +30,15 @@ public sealed class GatewayState
     private readonly object _triageLock = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastAlertPerNode = new(StringComparer.OrdinalIgnoreCase);
 
+    // Which nodes currently have an unacknowledged system alert of each kind. Kept as sets so the
+    // ingestion hot path can decide in O(1) whether anything needs resolving, instead of scanning
+    // the whole feed on every packet.
+    private readonly ConcurrentDictionary<string, byte> _openDisconnectAlerts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, byte> _openAnomalyAlerts = new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly string[] DisconnectTitles = { "Sensor disconnect" };
+    private static readonly string[] AnomalyTitles = { "Telemetry spike", "Baseline drift" };
+
     private long _totalPackets;
     private readonly ConcurrentQueue<long> _packetTicks = new();   // for packets/sec
 
@@ -144,8 +153,23 @@ public sealed class GatewayState
         while (_packetTicks.TryPeek(out var oldest) && Stopwatch.GetElapsedTime(oldest).TotalSeconds > 10)
             _packetTicks.TryDequeue(out _);
 
+        var mac = channel.Profile.MacAddress;
+
+        // A packet arriving at all means the node is no longer silent.
+        if (_openDisconnectAlerts.ContainsKey(mac))
+            ResolveSystemAlerts(channel, DisconnectTitles, _openDisconnectAlerts, "auto: node recovered");
+
         if (result.State is NodeState.Spike or NodeState.Drift)
+        {
             RaiseSystemAlert(channel, result);
+        }
+        else if (channel.State == NodeState.Healthy && _openAnomalyAlerts.ContainsKey(mac))
+        {
+            // The reading is back inside the baseline and the anomaly hold has expired, so the
+            // condition has cleared: close the alert rather than leaving it to pile up. Keeping the
+            // feed to what is wrong *now* is the whole point of ranking it by severity.
+            ResolveSystemAlerts(channel, AnomalyTitles, _openAnomalyAlerts, "auto: reading returned to baseline");
+        }
     }
 
     public double PacketsPerSecond => _packetTicks.Count / 10.0;
@@ -158,6 +182,7 @@ public sealed class GatewayState
         if (_lastAlertPerNode.TryGetValue(channel.Profile.MacAddress, out var last) && (now - last).TotalSeconds < 30)
             return;
         _lastAlertPerNode[channel.Profile.MacAddress] = now;
+        _openAnomalyAlerts[channel.Profile.MacAddress] = 1;
 
         AddTriage(new TriageItem
         {
@@ -178,6 +203,7 @@ public sealed class GatewayState
         if (_lastAlertPerNode.TryGetValue(channel.Profile.MacAddress, out var last) && (now - last).TotalSeconds < 60)
             return;
         _lastAlertPerNode[channel.Profile.MacAddress] = now;
+        _openDisconnectAlerts[channel.Profile.MacAddress] = 1;
         AddTriage(new TriageItem
         {
             Id = Guid.NewGuid(),
@@ -191,16 +217,24 @@ public sealed class GatewayState
         });
     }
 
-    /// <summary>When a node reports again, its open "Sensor disconnect" item is closed automatically.</summary>
-    private void AutoResolveSilent(NodeChannel channel)
+    /// <summary>
+    /// Closes the open system alerts of the given kind for one node – the condition that raised them
+    /// has cleared. Without this the feed only ever grows, which is the alarm-overloading failure mode
+    /// the triage ranking exists to avoid.
+    /// </summary>
+    private void ResolveSystemAlerts(NodeChannel channel, string[] titles,
+        ConcurrentDictionary<string, byte> openSet, string reason)
     {
+        var mac = channel.Profile.MacAddress;
+        openSet.TryRemove(mac, out _);
         lock (_triageLock)
         {
-            foreach (var t in _triage.Where(t => t.IsOpen && t.Source == TriageSource.System && t.Title == "Sensor disconnect"
-                                                 && t.MacAddress.Equals(channel.Profile.MacAddress, StringComparison.OrdinalIgnoreCase)))
+            foreach (var t in _triage.Where(t => t.IsOpen && t.Source == TriageSource.System
+                                                 && titles.Contains(t.Title)
+                                                 && t.MacAddress.Equals(mac, StringComparison.OrdinalIgnoreCase)))
             {
                 t.AcknowledgedAt = DateTimeOffset.UtcNow;
-                t.AcknowledgedBy = "auto: node recovered";
+                t.AcknowledgedBy = reason;
             }
         }
     }
@@ -255,7 +289,8 @@ public sealed class GatewayState
         {
             var wasSilent = ch.State == NodeState.Silent;
             var state = ch.RefreshHeartbeat(now);
-            if (wasSilent && state != NodeState.Silent) AutoResolveSilent(ch);
+            if (wasSilent && state != NodeState.Silent)
+                ResolveSystemAlerts(ch, DisconnectTitles, _openDisconnectAlerts, "auto: node recovered");
             switch (state)
             {
                 case NodeState.Healthy: pulse.Healthy++; break;
