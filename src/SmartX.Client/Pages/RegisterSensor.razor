@@ -1,0 +1,211 @@
+@page "/ingestion/register"
+@inject GatewayApiClient Api
+@inject ToastService Toast
+@inject NavigationManager Nav
+
+<PageTitle>Register sensor · Smart-X</PageTitle>
+
+<h1>Register a sensor</h1>
+<small class="muted">Create a device profile. The form validates locally (DataAnnotations) and again on the API, which also runs the recursive deployment-tree check.</small>
+
+<div class="grid grid-2" style="margin-top:1rem">
+    <div class="card" style="margin:0">
+        <EditForm EditContext="_ctx" OnValidSubmit="Submit">
+            <DataAnnotationsValidator />
+            <div class="form-grid">
+                <div class="field">
+                    <label>MAC address / unique ID</label>
+                    <InputText @bind-Value="_model.MacAddress" placeholder="A1:2F:3C:4D:5E:6F" class="mono" @oninput="OnMacInput" />
+                    <ValidationMessage For="() => _model.MacAddress" />
+                    <span class="hint">Six hex pairs; “-” separators are accepted and normalised.</span>
+                </div>
+                <div class="field">
+                    <label>Friendly name</label>
+                    <InputText @bind-Value="_model.Name" placeholder="Soil probe – tray 4" />
+                    <ValidationMessage For="() => _model.Name" />
+                </div>
+                <div class="field">
+                    <label>Category</label>
+                    <InputSelect @bind-Value="_model.Category">
+                        <option value="@SensorCategory.Environmental">Environmental (float – %, °C)</option>
+                        <option value="@SensorCategory.PowerConsumption">Power consumption (int – W)</option>
+                        <option value="@SensorCategory.Actuator">Actuator (bool – valve / relay)</option>
+                    </InputSelect>
+                    <span class="hint">Determines the TelemetryPacket&lt;T&gt; type the API will use.</span>
+                </div>
+                <div class="field">
+                    <label>Publish interval (s)</label>
+                    <InputNumber @bind-Value="_model.PublishIntervalSeconds" />
+                    <ValidationMessage For="() => _model.PublishIntervalSeconds" />
+                    <span class="hint">A node is flagged Silent after 3 missed intervals.</span>
+                </div>
+                <div class="field">
+                    <label>Facility</label>
+                    <InputSelect @bind-Value="_model.Facility">
+                        @foreach (var f in _facilities) { <option value="@f">@f</option> }
+                    </InputSelect>
+                    <ValidationMessage For="() => _model.Facility" />
+                </div>
+                <div class="field">
+                    <label>Zone</label>
+                    <InputSelect @bind-Value="_model.Zone">
+                        <option value="">— select —</option>
+                        @foreach (var z in Zones) { <option value="@z.Name">@z.Name</option> }
+                    </InputSelect>
+                    <ValidationMessage For="() => _model.Zone" />
+                </div>
+                <div class="field">
+                    <label>Sub-zone <small>(optional)</small></label>
+                    <InputText @bind-Value="_model.SubZone" placeholder="Sub-Zone B" list="subzones" />
+                    <datalist id="subzones">@foreach (var s in SubZones) { <option value="@s"></option> }</datalist>
+                </div>
+                <div class="field">
+                    <label>Node ID / room / rack</label>
+                    <InputText @bind-Value="_model.NodeId" placeholder="Rack 3" />
+                    <ValidationMessage For="() => _model.NodeId" />
+                </div>
+            </div>
+
+            @if (_serverErrors.Count > 0)
+            {
+                <div class="alert error" style="margin-top:.9rem">
+                    <strong>The API rejected the record:</strong>
+                    <ul style="margin:.3rem 0 0 1rem">@foreach (var e in _serverErrors) { <li>@e</li> }</ul>
+                </div>
+            }
+
+            <div class="actions">
+                <button class="btn primary" type="submit" disabled="@_busy">@if (_busy) { <span class="spinner"></span> } Register sensor</button>
+                <button class="btn" type="button" @onclick="Randomise">🎲 Fill with sample</button>
+                <button class="btn" type="button" @onclick="CheckPlacement" disabled="@_busy">🔍 Check placement only</button>
+            </div>
+        </EditForm>
+    </div>
+
+    <div>
+        <div class="card" style="margin:0">
+            <h2>Deployment path preview</h2>
+            <p class="mono" style="font-size:.9rem">@PathPreview</p>
+            @if (_placement is not null)
+            {
+                <div class="alert @(_placement.IsValid ? "success" : "error")">
+                    <strong>@(_placement.IsValid ? "✓ Node may be placed here" : "✗ Placement blocked")</strong>
+                    <div class="muted" style="font-size:.78rem">Recursive check visited @_placement.NodesVisited tier(s), depth @_placement.MaxDepth.</div>
+                    @foreach (var i in _placement.Issues) { <div style="font-size:.82rem;margin-top:.3rem"><StateChip Value="@i.Severity.ToString()" /> @i.Message</div> }
+                    <details style="margin-top:.4rem"><summary style="cursor:pointer;font-size:.78rem">recursion trace</summary><pre class="mono" style="font-size:.72rem;margin:.3rem 0 0;white-space:pre-wrap">@string.Join("\n", _placement.Trace)</pre></details>
+                </div>
+            }
+        </div>
+        <div class="card">
+            <h2>Tier constraints</h2>
+            <small class="muted">Loaded from <code>/api/topology</code>. Each tier can only tighten what its parent allows.</small>
+            @if (_topology is null) { <div class="empty">Loading…</div> }
+            else
+            {
+                <div class="tree"><ul>@RenderNode(_topology)</ul></div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private SensorRegistrationRequest _model = new();
+    private EditContext _ctx = default!;
+    private bool _busy;
+    private List<string> _serverErrors = new();
+    private TopologyValidationResult? _placement;
+    private DeploymentNode? _topology;
+    private readonly List<string> _facilities = new() { "Facility A" };
+
+    private IEnumerable<DeploymentNode> Zones => _topology?.Children ?? Enumerable.Empty<DeploymentNode>();
+    private IEnumerable<string> SubZones => Zones.SelectMany(z => z.Children).Select(c => c.Name).Distinct().OrderBy(x => x);
+
+    private string PathPreview =>
+        string.Join(" → ", new[] { _model.Facility, _model.Zone, _model.SubZone, _model.NodeId }.Where(s => !string.IsNullOrWhiteSpace(s)))
+        is { Length: > 0 } p ? p : "(fill the form)";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _model = new SensorRegistrationRequest { Facility = "Facility A" };
+        _ctx = new EditContext(_model);
+        try { _topology = await Api.GetTopologyAsync(); } catch { }
+    }
+
+    private void OnMacInput(ChangeEventArgs e)
+    {
+        var v = e.Value?.ToString() ?? "";
+        _model.MacAddress = v.ToUpperInvariant();
+    }
+
+    private void Randomise()
+    {
+        var r = Random.Shared;
+        var cat = (SensorCategory)r.Next(3);
+        var zone = Zones.Skip(r.Next(Math.Max(1, Zones.Count()))).FirstOrDefault();
+        _model.MacAddress = $"A1:2F:{r.Next(256):X2}:{r.Next(256):X2}:{r.Next(256):X2}:{r.Next(256):X2}";
+        _model.Name = cat switch { SensorCategory.Environmental => "Soil probe – tray " + r.Next(1, 40), SensorCategory.PowerConsumption => "Smart meter – DB " + r.Next(1, 12), _ => "Valve relay – line " + r.Next(1, 8) };
+        _model.Category = cat;
+        _model.Zone = zone?.Name ?? "Zone 2";
+        _model.SubZone = zone?.Children.Skip(r.Next(Math.Max(1, zone.Children.Count))).FirstOrDefault()?.Name ?? "Sub-Zone A";
+        _model.NodeId = "Rack " + r.Next(1, 13);
+        _model.PublishIntervalSeconds = cat == SensorCategory.Actuator ? 10 : 5;
+        _ctx = new EditContext(_model);
+        _placement = null; _serverErrors.Clear();
+    }
+
+    private async Task CheckPlacement()
+    {
+        _busy = true;
+        var path = new List<string> { _model.Facility, _model.Zone };
+        if (!string.IsNullOrWhiteSpace(_model.SubZone)) path.Add(_model.SubZone);
+        try
+        {
+            _placement = await Api.ValidatePlacementAsync(new NodePlacementRequest
+            {
+                MacAddress = _model.MacAddress, Path = path, Category = _model.Category,
+                PublishIntervalSeconds = _model.PublishIntervalSeconds,
+                RatedWatts = _model.Category == SensorCategory.PowerConsumption ? 150 : 0
+            });
+        }
+        catch (Exception ex) { Toast.Error("Placement check failed", ex.Message); }
+        _busy = false;
+    }
+
+    private async Task Submit()
+    {
+        _busy = true; _serverErrors.Clear();
+        var r = await Api.RegisterSensorAsync(_model);
+        _busy = false;
+        if (r.Success)
+        {
+            Toast.Success("Sensor registered", $"{r.Value!.MacAddress} → {r.Value.DeploymentPathDisplay}");
+            Nav.NavigateTo($"ingestion/sensors/{r.Value.Id}");
+            return;
+        }
+        _serverErrors = r.FieldErrors.SelectMany(kv => kv.Value.Select(v => $"{kv.Key}: {v}")).ToList();
+        if (_serverErrors.Count == 0 && r.Error is not null) _serverErrors.Add(r.Error);
+        Toast.Error("Registration rejected", _serverErrors.FirstOrDefault());
+    }
+
+    private RenderFragment RenderNode(DeploymentNode n) => builder =>
+    {
+        builder.OpenElement(0, "li");
+        builder.AddContent(1, n.Name);
+        builder.OpenElement(2, "span"); builder.AddAttribute(3, "class", "kind");
+        var bits = new List<string> { n.Kind };
+        if (n.Config.AllowedCategories.Count > 0) bits.Add("allows " + string.Join("/", n.Config.AllowedCategories));
+        if (n.Config.PowerBudgetWatts > 0) bits.Add($"budget {n.Config.PowerBudgetWatts} W");
+        if (n.Config.MaxSensors > 0) bits.Add($"max {n.Config.MaxSensors} sensors");
+        if (n.Config.MinPublishIntervalSeconds > 0) bits.Add($"≥{n.Config.MinPublishIntervalSeconds}s interval");
+        if (n.SensorMacs.Count > 0) bits.Add($"{n.SensorMacs.Count} sensor(s)");
+        builder.AddContent(4, " · " + string.Join(" · ", bits));
+        builder.CloseElement();
+        if (n.Children.Count > 0)
+        {
+            builder.OpenElement(5, "ul");
+            foreach (var c in n.Children) builder.AddContent(6, RenderNode(c));
+            builder.CloseElement();
+        }
+        builder.CloseElement();
+    };
+}
