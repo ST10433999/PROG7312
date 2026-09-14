@@ -1,0 +1,61 @@
+@inherits LayoutComponentBase
+@inject GatewayApiClient Api
+@implements IDisposable
+
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="logo">SX</div>
+            <div>Smart-X Gateway<span class="sub">IoT Mesh Ecosystem · Part 1</span></div>
+        </div>
+        <nav class="nav">
+            <NavLink href="" Match="NavLinkMatch.All">🏠 <span>Gateway home</span></NavLink>
+            <NavLink href="ingestion">📡 <span>Sensor Ingestion</span><span class="tag">Part 1</span></NavLink>
+            <NavLink href="ingestion/register">➕ <span>Register sensor</span></NavLink>
+            <NavLink href="ingestion/sensors">🗂 <span>Sensor registry</span></NavLink>
+            <NavLink href="ingestion/data-structures">🧬 <span>Data structures</span></NavLink>
+            <span class="disabled" title="Implemented in Part 2">⚡ <span>Command Stream</span><span class="tag">Part 2</span></span>
+            <span class="disabled" title="Implemented in the final PoE">🕸 <span>Mesh Topology</span><span class="tag">PoE</span></span>
+        </nav>
+        <div class="foot">
+            <span class="api-dot @(_apiOk is null ? "" : _apiOk == true ? "ok" : "bad")"></span>
+            @if (_apiOk == true) { <span>API online · @_runtime</span> }
+            else if (_apiOk == false) { <span>API unreachable at @Api.BaseAddress</span> }
+            else { <span>Checking API…</span> }
+        </div>
+    </aside>
+    <main class="main">
+        @Body
+    </main>
+</div>
+<Toasts />
+
+@code {
+    private bool? _apiOk;
+    private string _runtime = "";
+    private readonly CancellationTokenSource _cts = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _ = PollAsync();
+        await Task.CompletedTask;
+    }
+
+    private async Task PollAsync()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+        do
+        {
+            try
+            {
+                var h = await Api.GetHealthAsync(_cts.Token);
+                _apiOk = h?.Status == "ok";
+                _runtime = h?.Runtime.Replace(".NET ", "net") ?? "";
+            }
+            catch { _apiOk = false; }
+            StateHasChanged();
+        } while (await timer.WaitForNextTickAsync(_cts.Token).ConfigureAwait(false) == true && !_cts.IsCancellationRequested);
+    }
+
+    public void Dispose() { _cts.Cancel(); _cts.Dispose(); }
+}
