@@ -1,0 +1,60 @@
+@page "/"
+@inject GatewayApiClient Api
+
+<PageTitle>Smart-X Gateway</PageTitle>
+
+<section class="hero">
+    <h1>Smart-X Data Ingestion &amp; Validation Gateway</h1>
+    <p>
+        Central gateway for a hybrid IoT mesh of ESP32 nodes publishing multi-typed telemetry – floats for soil moisture,
+        integers for wattage, booleans for valve states. Choose an architectural pillar to begin.
+    </p>
+</section>
+
+@if (_health is not null)
+{
+    <div class="stats" style="max-width:720px">
+        <div class="stat"><div class="label">Registered sensors</div><div class="value">@_health.Sensors.ToString("N0")</div></div>
+        <div class="stat"><div class="label">Packets ingested</div><div class="value">@_health.PacketsIngested.ToString("N0")</div></div>
+        <div class="stat"><div class="label">Backend</div><div class="value" style="font-size:1rem">@_health.Runtime</div></div>
+    </div>
+}
+else if (_error is not null)
+{
+    <div class="alert error">Could not reach the .NET API at <code>@Api.BaseAddress</code>. Start it with <code>dotnet run --project src/SmartX.Api</code>. (@_error)</div>
+}
+
+<div class="pillars">
+    <a class="pillar enabled" href="ingestion">
+        <span class="badge">Part 1 · Active</span>
+        <div class="icon">📡</div>
+        <h2>Sensor Data Ingestion &amp; Telemetry</h2>
+        <p>Register ESP32 nodes, push typed telemetry through <code>TelemetryPacket&lt;T&gt;</code>, attach configs and logs, and watch the live Node Pulse Board flag spikes and disconnects.</p>
+        <span class="cta">Open ingestion console →</span>
+    </a>
+    <div class="pillar disabled" aria-disabled="true" title="Disabled – implemented in Part 2">
+        <span class="badge">Part 2 · Disabled</span>
+        <div class="icon">⚡</div>
+        <h2>Real-Time Command Stream &amp; History</h2>
+        <p>Bidirectional command channel to actuators with a replayable event history. Coming in Part 2.</p>
+        <span class="cta">Locked</span>
+    </div>
+    <div class="pillar disabled" aria-disabled="true" title="Disabled – implemented in the final PoE">
+        <span class="badge">Final PoE · Disabled</span>
+        <div class="icon">🕸</div>
+        <h2>Network Topology &amp; Mesh Routing</h2>
+        <p>Visualise mesh hops, route telemetry around failed nodes and balance gateway load. Coming in the final PoE.</p>
+        <span class="cta">Locked</span>
+    </div>
+</div>
+
+@code {
+    private HealthInfo? _health;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _health = await Api.GetHealthAsync(); }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+}
