@@ -1,0 +1,18 @@
+@inject ToastService Toast
+@implements IDisposable
+
+<div class="toasts">
+    @foreach (var t in Toast.Toasts)
+    {
+        <div class="toast @t.Kind" @onclick="() => Toast.Dismiss(t.Id)">
+            <div class="t">@t.Title</div>
+            @if (!string.IsNullOrEmpty(t.Detail)) { <div class="d">@t.Detail</div> }
+        </div>
+    }
+</div>
+
+@code {
+    protected override void OnInitialized() => Toast.Changed += OnChanged;
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+    public void Dispose() => Toast.Changed -= OnChanged;
+}
