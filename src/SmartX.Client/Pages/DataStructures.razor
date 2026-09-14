@@ -1,0 +1,109 @@
+@page "/ingestion/data-structures"
+@inject GatewayApiClient Api
+@inject ToastService Toast
+
+<PageTitle>Data structures · Smart-X</PageTitle>
+
+<h1>Data structures under load</h1>
+<small class="muted">Live evidence from the API that the generic wrapper, operator overloading, jagged arrays → List&lt;T&gt; and the recursive validator are doing real work.</small>
+
+<div class="grid grid-2" style="margin-top:1rem">
+    <div class="card" style="margin:0">
+        <div class="card-head"><h2>Operator overloading on TelemetryPacket&lt;int&gt;</h2><button class="btn sm" @onclick="LoadAggregate">↻</button></div>
+        @if (_agg is null) { <div class="empty">Loading…</div> }
+        else
+        {
+            <pre class="mono" style="background:var(--bg-elev);padding:.8rem;border-radius:8px;white-space:pre-wrap;font-size:.8rem">var meter1 = @_agg.LeftPacket
+var meter2 = @_agg.RightPacket
+
+var meter3 = meter1 + meter2;   // @_agg.SumPacket
+var delta  = meter1 - meter2;   // @_agg.DeltaPacket
+meter1 &gt; meter2                 // @_agg.LeftGreaterThanRight.ToString().ToLower()
+
+typeof(T) == @_agg.PayloadType   // resolved once per T, no boxing</pre>
+            <small class="muted">Values are the two most recent live smart-meter packets; refresh to see them change.</small>
+        }
+    </div>
+
+    <div class="card" style="margin:0">
+        <div class="card-head"><h2>Jagged batches → List&lt;T&gt;</h2><button class="btn sm" @onclick="LoadBatches">↻</button></div>
+        @if (_batches is null) { <div class="empty">Loading…</div> }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Store</th><th>T</th><th>Batches</th><th>Packets</th><th>Flatten → List</th></tr></thead>
+                    <tbody>
+                        <tr><td>EnvironmentalHistory</td><td class="mono">float</td><td>@_batches.Environmental.BatchCount</td><td>@_batches.Environmental.TotalPackets.ToString("N0")</td><td class="mono">@_batches.Environmental.FlattenedListCount.ToString("N0") in @_batches.Environmental.FlattenMilliseconds ms</td></tr>
+                        <tr><td>PowerHistory</td><td class="mono">int</td><td>@_batches.Power.BatchCount</td><td>@_batches.Power.TotalPackets.ToString("N0")</td><td class="mono">@_batches.Power.FlattenedListCount.ToString("N0") in @_batches.Power.FlattenMilliseconds ms</td></tr>
+                        <tr><td>ActuatorHistory</td><td class="mono">bool</td><td>@_batches.Actuator.BatchCount</td><td>@_batches.Actuator.TotalPackets.ToString("N0")</td><td class="mono">@_batches.Actuator.FlattenedListCount.ToString("N0") in @_batches.Actuator.FlattenMilliseconds ms</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <h3 style="margin-top:.9rem">Ragged shape of <code>TelemetryPacket&lt;float&gt;[][]</code></h3>
+            <div style="display:flex;align-items:flex-end;gap:3px;height:70px">
+                @{ var max = Math.Max(1, _batches.Environmental.BatchLengths.DefaultIfEmpty(1).Max()); }
+                @foreach (var (len, i) in _batches.Environmental.BatchLengths.Select((l, i) => (l, i)))
+                {
+                    <div title="batch[@i] length @len" style="flex:1;background:var(--accent);opacity:.8;border-radius:3px 3px 0 0;height:@(len * 100 / max)%"></div>
+                }
+            </div>
+            <small class="muted">One bar per hourly batch – each inner array has its own length, which a rectangular array would have to pad.</small>
+
+            <h3 style="margin-top:.9rem">Multi-dimensional <code>double[24, 3]</code> hourly grid (min / mean / max, %)</h3>
+            <div class="table-wrap" style="max-height:180px;overflow:auto">
+                <table>
+                    <thead><tr><th>h</th><th>min</th><th>mean</th><th>max</th></tr></thead>
+                    <tbody>@foreach (var (row, h) in _batches.Environmental.HourlyGrid.Select((r, h) => (r, h))) { <tr><td>@h</td><td class="mono">@row[0]</td><td class="mono">@row[1]</td><td class="mono">@row[2]</td></tr> }</tbody>
+                </table>
+            </div>
+        }
+    </div>
+
+    <div class="card" style="margin:0;grid-column:1 / -1">
+        <div class="card-head"><h2>Recursive topology validation</h2><button class="btn sm" @onclick="LoadValidation" disabled="@_validating">@if (_validating) { <span class="spinner"></span> } Run ValidateTree()</button></div>
+        @if (_validation is null) { <div class="empty">Run the validator to walk the full Facility → Zone → Sub-Zone → Rack tree.</div> }
+        else
+        {
+            <div class="stats" style="margin-bottom:.8rem">
+                <div class="stat @(_validation.IsValid ? "healthy" : "silent")"><div class="label">Result</div><div class="value">@(_validation.IsValid ? "VALID" : "ISSUES")</div></div>
+                <div class="stat"><div class="label">Tiers visited</div><div class="value">@_validation.NodesVisited</div></div>
+                <div class="stat"><div class="label">Max depth</div><div class="value">@_validation.MaxDepth</div></div>
+                <div class="stat"><div class="label">Sensors found</div><div class="value">@_validation.SensorsFound</div></div>
+                <div class="stat"><div class="label">Issues</div><div class="value">@_validation.Issues.Count</div></div>
+            </div>
+            @foreach (var i in _validation.Issues) { <div class="alert error" style="margin-bottom:.4rem"><StateChip Value="@i.Severity.ToString()" /> <strong>@i.Rule</strong> · @i.Path — @i.Message</div> }
+            <details><summary style="cursor:pointer">Recursion trace (@_validation.Trace.Count lines)</summary>
+                <pre class="mono" style="font-size:.75rem;max-height:260px;overflow:auto;background:var(--bg-elev);padding:.6rem;border-radius:8px">@string.Join("\n", _validation.Trace)</pre></details>
+        }
+    </div>
+</div>
+
+@code {
+    private AggregateDemoResult? _agg;
+    private BatchOverview? _batches;
+    private TopologyValidationResult? _validation;
+    private bool _validating;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Task.WhenAll(LoadAggregate(), LoadBatches());
+    }
+
+    private async Task LoadAggregate()
+    {
+        try { _agg = await Api.GetAggregateDemoAsync(); } catch (Exception ex) { Toast.Error("Aggregate demo failed", ex.Message); }
+    }
+
+    private async Task LoadBatches()
+    {
+        try { _batches = await Api.GetBatchesAsync(); } catch (Exception ex) { Toast.Error("Batch stats failed", ex.Message); }
+    }
+
+    private async Task LoadValidation()
+    {
+        _validating = true;
+        try { _validation = await Api.ValidateTopologyAsync(); } catch (Exception ex) { Toast.Error("Validation failed", ex.Message); }
+        _validating = false;
+    }
+}
