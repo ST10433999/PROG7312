@@ -19,6 +19,9 @@ public abstract class NodeChannel
     public DateTimeOffset? LastAnomalyAt { get; protected set; }
     public bool WasSilent { get; protected set; }
 
+    /// <summary>The z-score of the reading that put this node into its current Drift/Spike state.</summary>
+    protected double AnomalyZScore;
+
     /// <summary>How long a Spike/Drift keeps colouring the tile after the offending packet, so it cannot be missed between polls.</summary>
     public static readonly TimeSpan AnomalyHold = TimeSpan.FromSeconds(15);
     public double? LastValue { get; protected set; }
@@ -88,12 +91,28 @@ public sealed class NodeChannel<T> : NodeChannel where T : struct
         PacketsIngested++;
         LastSeen = packet.Timestamp;
         LastValue = TelemetryOps<T>.ToDouble(packet.Value);
-        LastZScore = z;
 
-        if (state != NodeState.Healthy) LastAnomalyAt = packet.Timestamp;
+        if (state != NodeState.Healthy)
+        {
+            LastAnomalyAt = packet.Timestamp;
+            AnomalyZScore = z;
+        }
+
         // Hold a recent anomaly on the tile so a single spike survives a couple of healthy packets.
-        var held = State is NodeState.Spike or NodeState.Drift && LastAnomalyAt is { } t && packet.Timestamp - t < AnomalyHold;
-        State = state == NodeState.Healthy && held ? State : state;
+        // While held, keep reporting the z-score of the reading that caused it – showing the current
+        // (healthy) score beside a "SPIKE" label would contradict itself.
+        var held = State is NodeState.Spike or NodeState.Drift
+                   && LastAnomalyAt is { } t && packet.Timestamp - t < AnomalyHold;
+
+        if (state == NodeState.Healthy && held)
+        {
+            LastZScore = AnomalyZScore;
+        }
+        else
+        {
+            State = state;
+            LastZScore = z;
+        }
 
         return new TelemetryIngestResult
         {
