@@ -1,0 +1,35 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: src/SmartX.Api/Dockerfile
+    container_name: smartx-api
+    ports:
+      - "8080:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Seed__SensorCount: "240"
+      Simulator__Enabled: "true"
+      Cors__AllowedOrigins__0: "http://localhost:8081"
+      # Optional: 32-byte base64 key for AES-256 attachment encryption (a dev key is derived if empty)
+      Attachments__AesKeyBase64: ""
+    volumes:
+      - smartx-attachments:/data/attachments
+    restart: unless-stopped
+
+  client:
+    build:
+      context: .
+      dockerfile: src/SmartX.Client/Dockerfile
+    container_name: smartx-client
+    ports:
+      - "8081:80"
+    environment:
+      # The browser calls the API directly, so this must be reachable from the host.
+      API_BASE_URL: "http://localhost:8080/"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  smartx-attachments:
