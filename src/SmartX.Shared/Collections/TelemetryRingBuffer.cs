@@ -77,9 +77,13 @@ public sealed class TelemetryRingBuffer<T> : IReadOnlyCollection<TelemetryPacket
     /// <summary>Standard score of a candidate value against the current window (0 when the window is flat).</summary>
     public double ZScore(T candidate)
     {
-        var sd = StdDev;
-        if (sd == 0 || _count < 10) return 0;
-        return (TelemetryOps<T>.ToDouble(candidate) - Mean) / sd;
+        if (_count < 10) return 0;   // not enough history to call anything anomalous
+        var mean = Mean;
+        // A perfectly flat baseline has σ = 0, which would make any deviation "infinite" (or, naively, 0).
+        // Floor σ at 1 % of |mean| (minimum 0.01) so a 50 → 100 jump on a flat sensor scores as a clear spike
+        // while sub-percent jitter stays healthy.
+        var sd = Math.Max(StdDev, Math.Max(0.01, Math.Abs(mean) * 0.01));
+        return (TelemetryOps<T>.ToDouble(candidate) - mean) / sd;
     }
 
     /// <summary>Copies the window (oldest → newest) into a plain <see cref="List{T}"/> of raw values.</summary>
