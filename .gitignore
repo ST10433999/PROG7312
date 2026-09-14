@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.swp
+App_Data/
+.DS_Store
+launchSettings.json.bak
