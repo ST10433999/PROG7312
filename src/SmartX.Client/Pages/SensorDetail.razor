@@ -1,0 +1,214 @@
+@page "/ingestion/sensors/{Id:guid}"
+@inject GatewayApiClient Api
+@inject ToastService Toast
+@inject NavigationManager Nav
+
+<PageTitle>Sensor profile · Smart-X</PageTitle>
+
+@if (_sensor is null)
+{
+    <div class="empty">@(_notFound ? "Sensor not found." : "Loading…")</div>
+}
+else
+{
+    <div class="card-head">
+        <div>
+            <h1>@_sensor.Name</h1>
+            <span class="mono muted">@_sensor.MacAddress</span> · <StateChip Value="@_sensor.Category.ToString()" /> · <small class="muted">@_sensor.DeploymentPathDisplay</small>
+        </div>
+        <div class="actions" style="margin:0">
+            <a class="btn sm" href="ingestion/sensors">← Registry</a>
+            <button class="btn sm danger" @onclick="Delete">Delete profile</button>
+        </div>
+    </div>
+
+    <div class="grid grid-2">
+        <div>
+            <div class="card" style="margin:0">
+                <h2>Profile</h2>
+                <dl class="kv">
+                    <dt>Sensor ID</dt><dd>@_sensor.Id</dd>
+                    <dt>Payload type</dt><dd>TelemetryPacket&lt;@(_sensor.Payload.ToString().ToLower())&gt; @(_sensor.Unit is { Length: > 0 } ? $"({_sensor.Unit})" : "")</dd>
+                    <dt>Publish interval</dt><dd>@_sensor.PublishIntervalSeconds s</dd>
+                    <dt>Registered</dt><dd>@_sensor.RegisteredAt.ToLocalTime().ToString("dd MMM yyyy HH:mm")</dd>
+                    <dt>Deployment path</dt><dd>@_sensor.DeploymentPathDisplay</dd>
+                </dl>
+            </div>
+
+            <div class="card">
+                <div class="card-head"><h2>Live window</h2>
+                    @if (_recent is not null) { <StateChip Value="@_recent.State.ToString()" /> }
+                </div>
+                @if (_recent is null) { <div class="empty">No telemetry yet.</div> }
+                else
+                {
+                    <div class="big-spark"><Sparkline Values="_recent.Values" Thick="true" Stroke="#2dd4bf" /></div>
+                    <dl class="kv" style="margin-top:.5rem">
+                        <dt>Samples</dt><dd>@_recent.Window / 60 (custom ring buffer)</dd>
+                        <dt>Mean μ</dt><dd>@_recent.Mean.ToString("0.###")</dd>
+                        <dt>Std dev σ</dt><dd>@_recent.StdDev.ToString("0.###")</dd>
+                        <dt>Last z</dt><dd>@_recent.ZScore.ToString("+0.00;-0.00")</dd>
+                    </dl>
+                }
+                <div class="actions"><button class="btn sm" @onclick="LoadTelemetry">↻ Refresh</button>
+                    <button class="btn sm" @onclick="() => _showHistory = !_showHistory">@(_showHistory ? "Hide" : "Show") 24 h history (@(_history?.Count ?? 0))</button></div>
+                @if (_showHistory && _history is { Count: > 0 })
+                {
+                    <div class="big-spark" style="margin-top:.6rem"><Sparkline Values="_history.Select(h => h.Value).ToList()" Thick="true" Stroke="#a78bfa" ShowLast="false" /></div>
+                    <small class="muted">Flattened from the jagged historical batch store into a List&lt;TelemetryPacket&lt;T&gt;&gt; on the API.</small>
+                }
+            </div>
+        </div>
+
+        <div class="card" style="margin:0">
+            <h2>Attachments <small class="muted">(@_sensor.Attachments.Count)</small></h2>
+            <small class="muted">Device config files, deployment photos and hardware logs. Streamed as multipart, encrypted with AES-256 at rest.</small>
+
+            <div class="dropzone" style="margin-top:.8rem">
+                <InputFile OnChange="OnFilesSelected" multiple accept=".json,.yaml,.yml,.cfg,.ini,.txt,.log,.csv,.png,.jpg,.jpeg,.webp,.pdf,.bin" />
+                <div>📎 Drop files here or click to browse</div>
+                <small>Up to 10 files · 25 MB each · json, yaml, cfg, log, csv, png, jpg, pdf, bin</small>
+            </div>
+
+            @if (_pending.Count > 0)
+            {
+                <ul class="file-list">
+                    @foreach (var f in _pending)
+                    {
+                        <li>@FileIcon(f.Name) @f.Name <span class="size">@Size(f.Size)</span>
+                            @if (_fileErrors.TryGetValue(f.Name, out var err)) { <span class="validation-message">@err</span> }
+                        </li>
+                    }
+                </ul>
+                @if (_uploading) { <div class="progress"><div style="width:@(_progress)%"></div></div> }
+                <div class="actions">
+                    <button class="btn primary sm" @onclick="Upload" disabled="@(_uploading || _pending.All(f => _fileErrors.ContainsKey(f.Name)))">@if (_uploading) { <span class="spinner"></span> } Upload @_pending.Count(f => !_fileErrors.ContainsKey(f.Name)) file(s)</button>
+                    <button class="btn sm" @onclick="() => { _pending.Clear(); _fileErrors.Clear(); }" disabled="@_uploading">Clear</button>
+                </div>
+            }
+
+            @if (_sensor.Attachments.Count == 0) { <div class="empty">No attachments yet.</div> }
+            else
+            {
+                <div class="table-wrap" style="margin-top:.8rem">
+                    <table>
+                        <thead><tr><th>File</th><th>Size</th><th>SHA-256</th><th>Uploaded</th><th></th></tr></thead>
+                        <tbody>
+                            @foreach (var a in _sensor.Attachments.OrderByDescending(a => a.UploadedAt))
+                            {
+                                <tr @key="a.Id">
+                                    <td>@FileIcon(a.FileName) @a.FileName @if (a.Encrypted) { <span class="chip" title="AES-256-CBC at rest">🔒 encrypted</span> }</td>
+                                    <td class="mono">@Size(a.SizeBytes)</td>
+                                    <td class="mono" title="@a.Sha256">@a.Sha256[..12]…</td>
+                                    <td><small class="muted">@a.UploadedAt.ToLocalTime().ToString("dd MMM HH:mm")</small></td>
+                                    <td><a class="btn sm" href="@Api.AttachmentUrl(_sensor.Id, a.Id)" target="_blank">⬇</a> <button class="btn sm danger" @onclick="() => DeleteAttachment(a)">✕</button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private const long MaxBytes = 25 * 1024 * 1024;
+    private static readonly HashSet<string> Allowed = new(StringComparer.OrdinalIgnoreCase) { ".json", ".yaml", ".yml", ".cfg", ".ini", ".txt", ".log", ".csv", ".png", ".jpg", ".jpeg", ".webp", ".pdf", ".bin" };
+
+    private SensorProfile? _sensor;
+    private bool _notFound;
+    private RecentWindow? _recent;
+    private List<HistoryPoint>? _history;
+    private bool _showHistory;
+    private readonly List<IBrowserFile> _pending = new();
+    private readonly Dictionary<string, string> _fileErrors = new();
+    private bool _uploading;
+    private int _progress;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try { _sensor = await Api.GetSensorAsync(Id); }
+        catch { _sensor = null; }
+        _notFound = _sensor is null;
+        if (_sensor is not null) await LoadTelemetry();
+    }
+
+    private async Task LoadTelemetry()
+    {
+        if (_sensor is null) return;
+        try
+        {
+            var r = Api.GetRecentAsync(_sensor.MacAddress);
+            var h = Api.GetHistoryAsync(_sensor.MacAddress);
+            await Task.WhenAll(r, h);
+            _recent = r.Result; _history = h.Result;
+        }
+        catch (Exception ex) { Toast.Error("Telemetry unavailable", ex.Message); }
+    }
+
+    private void OnFilesSelected(InputFileChangeEventArgs e)
+    {
+        _pending.Clear(); _fileErrors.Clear();
+        foreach (var f in e.GetMultipleFiles(10))
+        {
+            _pending.Add(f);
+            var ext = Path.GetExtension(f.Name);
+            if (!Allowed.Contains(ext)) _fileErrors[f.Name] = $"{ext} not allowed";
+            else if (f.Size > MaxBytes) _fileErrors[f.Name] = "exceeds 25 MB";
+            else if (f.Size == 0) _fileErrors[f.Name] = "empty file";
+        }
+    }
+
+    private async Task Upload()
+    {
+        if (_sensor is null) return;
+        _uploading = true; _progress = 5;
+        try
+        {
+            using var content = new MultipartFormDataContent();
+            var files = _pending.Where(f => !_fileErrors.ContainsKey(f.Name)).ToList();
+            var i = 0;
+            foreach (var f in files)
+            {
+                // StreamContent over the browser file – the bytes are streamed, not buffered into a byte[].
+                var sc = new StreamContent(f.OpenReadStream(MaxBytes));
+                sc.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(string.IsNullOrEmpty(f.ContentType) ? "application/octet-stream" : f.ContentType);
+                content.Add(sc, "files", f.Name);
+                _progress = 5 + (int)(40.0 * ++i / files.Count);
+                StateHasChanged();
+            }
+            var result = await Api.UploadAttachmentsAsync(_sensor.Id, content);
+            _progress = 100;
+            if (result is null) { Toast.Error("Upload failed"); return; }
+            if (result.Saved.Count > 0) Toast.Success($"{result.Saved.Count} file(s) attached", string.Join(", ", result.Saved.Select(s => s.FileName)));
+            foreach (var r in result.Rejected) Toast.Error($"Rejected {r.FileName}", r.Reason);
+            _pending.Clear(); _fileErrors.Clear();
+            _sensor = await Api.GetSensorAsync(Id);
+        }
+        catch (Exception ex) { Toast.Error("Upload failed", ex.Message); }
+        finally { _uploading = false; _progress = 0; }
+    }
+
+    private async Task DeleteAttachment(AttachmentInfo a)
+    {
+        if (_sensor is null) return;
+        if (await Api.DeleteAttachmentAsync(_sensor.Id, a.Id)) { Toast.Info("Attachment removed", a.FileName); _sensor = await Api.GetSensorAsync(Id); }
+        else Toast.Error("Could not remove attachment");
+    }
+
+    private async Task Delete()
+    {
+        if (_sensor is null) return;
+        if (await Api.DeleteSensorAsync(_sensor.Id)) { Toast.Info("Profile deleted", _sensor.MacAddress); Nav.NavigateTo("ingestion/sensors"); }
+        else Toast.Error("Delete failed");
+    }
+
+    private static string Size(long b) => b < 1024 ? $"{b} B" : b < 1024 * 1024 ? $"{b / 1024.0:0.#} KB" : $"{b / 1024.0 / 1024:0.##} MB";
+    private static string FileIcon(string name) => Path.GetExtension(name).ToLowerInvariant() switch
+    {
+        ".png" or ".jpg" or ".jpeg" or ".webp" => "🖼", ".log" or ".txt" or ".csv" => "📄", ".json" or ".yaml" or ".yml" or ".cfg" or ".ini" => "⚙️", ".pdf" => "📕", _ => "📦"
+    };
+}
