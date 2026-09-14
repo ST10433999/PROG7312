@@ -1,0 +1,80 @@
+@page "/ingestion/sensors"
+@inject GatewayApiClient Api
+@inject ToastService Toast
+
+<PageTitle>Sensor registry · Smart-X</PageTitle>
+
+<div class="card-head">
+    <div><h1>Sensor registry</h1><small class="muted">Every registered device profile, served from the API's generic collections.</small></div>
+    <a class="btn primary sm" href="ingestion/register">＋ Register sensor</a>
+</div>
+
+<div class="card">
+    <div class="actions" style="margin:0 0 .8rem">
+        <input placeholder="Search MAC, name or location…" @bind="_search" @bind:event="oninput" @onkeyup="OnSearchKey" style="max-width:320px" />
+        <select @bind="_category" @bind:after="Load" style="width:auto">
+            <option value="">All categories</option>
+            <option value="Environmental">Environmental</option>
+            <option value="PowerConsumption">Power consumption</option>
+            <option value="Actuator">Actuator</option>
+        </select>
+        <button class="btn sm" @onclick="Load">Search</button>
+        @if (_result is not null) { <small class="muted">@_result.Total result(s)</small> }
+    </div>
+
+    @if (_loading) { <div class="empty"><span class="spinner" style="display:inline-block"></span></div> }
+    else if (_result is null) { <div class="alert error">Could not load sensors.</div> }
+    else if (_result.Items.Count == 0) { <div class="empty">No sensors match.</div> }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>MAC</th><th>Name</th><th>Category</th><th>Payload</th><th>Deployment path</th><th>Interval</th><th>Files</th><th>Registered</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var s in _result.Items)
+                    {
+                        <tr @key="s.Id">
+                            <td class="mono"><a href="ingestion/sensors/@s.Id">@s.MacAddress</a></td>
+                            <td>@s.Name</td>
+                            <td><StateChip Value="@s.Category.ToString()" /></td>
+                            <td class="mono">@s.Payload@(string.IsNullOrEmpty(s.Unit) ? "" : $" ({s.Unit})")</td>
+                            <td>@s.DeploymentPathDisplay</td>
+                            <td>@s.PublishIntervalSeconds s</td>
+                            <td>@s.Attachments.Count</td>
+                            <td><small class="muted">@s.RegisteredAt.ToLocalTime().ToString("dd MMM HH:mm")</small></td>
+                            <td><a class="btn sm" href="ingestion/sensors/@s.Id">Open</a></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="actions">
+            <button class="btn sm" @onclick="() => Page(-1)" disabled="@(_page <= 1)">← Prev</button>
+            <small class="muted">Page @_page of @Math.Max(1, (int)Math.Ceiling(_result.Total / (double)PageSize))</small>
+            <button class="btn sm" @onclick="() => Page(1)" disabled="@(_page * PageSize >= _result.Total)">Next →</button>
+        </div>
+    }
+</div>
+
+@code {
+    private const int PageSize = 25;
+    private PagedResult<SensorProfile>? _result;
+    private bool _loading = true;
+    private string _search = "";
+    private string _category = "";
+    private int _page = 1;
+
+    protected override Task OnInitializedAsync() => Load();
+
+    private async Task Load()
+    {
+        _loading = true;
+        try { _result = await Api.GetSensorsAsync(_search, _category, _page, PageSize); }
+        catch (Exception ex) { _result = null; Toast.Error("Failed to load sensors", ex.Message); }
+        _loading = false;
+    }
+
+    private Task OnSearchKey(KeyboardEventArgs e) => e.Key == "Enter" ? Reset() : Task.CompletedTask;
+    private Task Reset() { _page = 1; return Load(); }
+    private Task Page(int delta) { _page = Math.Max(1, _page + delta); return Load(); }
+}
