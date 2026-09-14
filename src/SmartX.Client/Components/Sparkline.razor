@@ -1,0 +1,42 @@
+@* Pure-SVG sparkline – no JS interop, re-renders on every poll. *@
+<svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+    @if (_points.Length > 0)
+    {
+        <polyline points="@_points" fill="none" stroke="@Stroke" stroke-width="@(Thick ? 1.2 : 1.6)" vector-effect="non-scaling-stroke" stroke-linejoin="round" />
+        @if (ShowLast)
+        {
+            <circle cx="@_lastX" cy="@_lastY" r="1.8" fill="@Stroke" />
+        }
+    }
+</svg>
+
+@code {
+    [Parameter] public IReadOnlyList<double> Values { get; set; } = Array.Empty<double>();
+    [Parameter] public string Stroke { get; set; } = "#22c55e";
+    [Parameter] public bool Thick { get; set; }
+    [Parameter] public bool ShowLast { get; set; } = true;
+
+    private string _points = "";
+    private string _lastX = "0", _lastY = "0";
+
+    protected override void OnParametersSet()
+    {
+        if (Values.Count < 2) { _points = ""; return; }
+        var min = Values.Min(); var max = Values.Max();
+        var span = max - min; if (span < 1e-9) span = 1;
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < Values.Count; i++)
+        {
+            var x = i * 100.0 / (Values.Count - 1);
+            var y = 28 - (Values[i] - min) / span * 26;
+            sb.Append(x.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)).Append(',')
+              .Append(y.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)).Append(' ');
+            if (i == Values.Count - 1)
+            {
+                _lastX = x.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+                _lastY = y.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+        _points = sb.ToString();
+    }
+}
