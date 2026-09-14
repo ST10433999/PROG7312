@@ -220,7 +220,7 @@ curl -X POST http://localhost:5200/api/telemetry -H "content-type: application/j
 
 ```
 SmartX/
-├─ SmartX.sln
+├─ SmartX.slnx
 ├─ docker-compose.yml
 ├─ docker/                      nginx.conf, client-entrypoint.sh
 ├─ README.md

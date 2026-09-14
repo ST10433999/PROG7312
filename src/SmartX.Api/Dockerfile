@@ -1,7 +1,7 @@
 # ---- build ----------------------------------------------------------------
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
-COPY SmartX.sln ./
+COPY SmartX.slnx ./
 COPY src/SmartX.Shared/SmartX.Shared.csproj src/SmartX.Shared/
 COPY src/SmartX.Api/SmartX.Api.csproj src/SmartX.Api/
 RUN dotnet restore src/SmartX.Api/SmartX.Api.csproj
