@@ -19,8 +19,10 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 
 builder.Services.Configure<FormOptions>(o =>
 {
-    o.MultipartBodyLengthLimit = AttachmentService.MaxBytes * 4;   // several files per request
+    o.MultipartBodyLengthLimit = AttachmentService.MaxRequestBytes;   // up to 10 × 25 MB per request
+    o.ValueLengthLimit = int.MaxValue;
 });
+builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = AttachmentService.MaxRequestBytes);
 
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
                      ?? new[] { "http://localhost:5100", "https://localhost:7100", "http://localhost:8080" };

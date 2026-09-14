@@ -22,6 +22,8 @@ public static class AttachmentEndpoints
 
             var form = await request.ReadFormAsync(ct);
             if (form.Files.Count == 0) return Results.BadRequest(new ProblemDetails { Title = "No files in request." });
+            if (form.Files.Count > AttachmentService.MaxFilesPerRequest)
+                return Results.BadRequest(new ProblemDetails { Title = $"At most {AttachmentService.MaxFilesPerRequest} files per request.", Status = 400 });
 
             var saved = new List<AttachmentInfo>();
             var rejected = new List<object>();
@@ -39,6 +41,7 @@ public static class AttachmentEndpoints
             return Results.Ok(new { saved, rejected });
         })
         .DisableAntiforgery()
+        .WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(AttachmentService.MaxRequestBytes))
         .WithSummary("Attach config files, photos or logs to a sensor (streamed, AES-256 encrypted at rest).");
 
         g.MapGet("/{attachmentId:guid}", (Guid id, Guid attachmentId, GatewayState state, AttachmentService files) =>

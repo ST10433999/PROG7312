@@ -14,6 +14,9 @@ namespace SmartX.Api.Services;
 public sealed class AttachmentService
 {
     public const long MaxBytes = 25 * 1024 * 1024;
+    public const int MaxFilesPerRequest = 10;
+    /// <summary>10 files × 25 MB plus multipart framing headroom.</summary>
+    public const long MaxRequestBytes = MaxFilesPerRequest * MaxBytes + 1024 * 1024;
     private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
         { ".json", ".yaml", ".yml", ".cfg", ".ini", ".txt", ".log", ".csv", ".png", ".jpg", ".jpeg", ".webp", ".pdf", ".bin" };
 
