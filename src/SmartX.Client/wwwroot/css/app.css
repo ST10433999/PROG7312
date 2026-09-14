@@ -158,14 +158,18 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .live-dot.paused { background: var(--unknown); animation: none; }
 
 /* ---------- triage feed ---------- */
-.triage { display: flex; flex-direction: column; gap: .5rem; max-height: 560px; overflow-y: auto; padding-right: .2rem; }
-.triage-item { display: grid; grid-template-columns: 82px 1fr auto; gap: .7rem; align-items: start; padding: .6rem .7rem; border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; background: var(--bg-elev); animation: slide-in .25s ease-out; }
+.triage { display: flex; flex-direction: column; gap: .5rem; max-height: 560px; overflow-y: auto; padding-right: .5rem; }
+.triage-item { display: grid; grid-template-columns: 78px minmax(0, 1fr) auto; gap: .7rem; align-items: start; padding: .6rem .7rem; border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; background: var(--bg-elev); animation: slide-in .25s ease-out; }
 .triage-item.Critical { border-left-color: var(--silent); } .triage-item.High { border-left-color: var(--spike); } .triage-item.Warn { border-left-color: var(--drift); } .triage-item.Info { border-left-color: var(--info); }
 .triage-item.acked { opacity: .5; }
 .triage-item .title { font-weight: 600; font-size: .9rem; }
 .triage-item .detail { font-size: .8rem; color: var(--text-muted); }
-.triage-item .meta { font-size: .7rem; color: var(--text-dim); font-family: var(--mono); }
+.triage-item .meta { font-size: .7rem; color: var(--text-dim); font-family: var(--mono); overflow-wrap: anywhere; }
 @keyframes slide-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+
+/* Pulse Board beside the triage feed – stacks before either column gets cramped. */
+.board-grid { grid-template-columns: minmax(0, 2fr) minmax(340px, 1fr); margin-top: 1rem; }
+@media (max-width: 1200px) { .board-grid { grid-template-columns: 1fr; } }
 
 /* ---------- detail drawer ---------- */
 .drawer { position: fixed; top: 0; right: 0; width: min(520px, 100vw); height: 100vh; background: var(--bg-elev); border-left: 1px solid var(--border); box-shadow: var(--shadow); padding: 1.3rem; overflow-y: auto; z-index: 50; animation: drawer .2s ease-out; }
