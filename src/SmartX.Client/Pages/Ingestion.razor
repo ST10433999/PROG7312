@@ -1,0 +1,282 @@
+@page "/ingestion"
+@inject GatewayApiClient Api
+@inject ToastService Toast
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>Node Pulse Board · Smart-X</PageTitle>
+
+<div class="card-head">
+    <div>
+        <h1>Sensor Data Ingestion &amp; Telemetry</h1>
+        <small>Node Pulse Board – live health of every registered node, ranked worst-first, with a severity-ordered triage feed.</small>
+    </div>
+    <div class="actions" style="margin:0">
+        <span><span class="live-dot @(_paused ? "paused" : "")"></span><small>@(_paused ? "Paused" : $"Live · every {PollSeconds}s")</small></span>
+        <button class="btn sm" @onclick="TogglePause">@(_paused ? "▶ Resume" : "⏸ Pause")</button>
+        <a class="btn sm primary" href="ingestion/register">＋ Register sensor</a>
+    </div>
+</div>
+
+@if (_pulse is null && _error is null)
+{
+    <div class="empty"><span class="spinner" style="display:inline-block"></span> Loading fleet…</div>
+}
+else if (_error is not null)
+{
+    <div class="alert error">@_error</div>
+}
+
+@if (_pulse is not null)
+{
+    <div class="stats">
+        <div class="stat"><div class="label">Sensors</div><div class="value">@_pulse.TotalSensors</div></div>
+        <div class="stat healthy"><div class="label">Healthy</div><div class="value">@_pulse.Healthy</div></div>
+        <div class="stat drift"><div class="label">Drift</div><div class="value">@_pulse.Drift</div></div>
+        <div class="stat spike"><div class="label">Spike</div><div class="value">@_pulse.Spike</div></div>
+        <div class="stat silent"><div class="label">Silent</div><div class="value">@_pulse.Silent</div></div>
+        <div class="stat"><div class="label">Packets / s</div><div class="value">@_pulse.PacketsPerSecond.ToString("0.0")</div></div>
+        <div class="stat"><div class="label">Open triage</div><div class="value">@_pulse.OpenTriageItems</div></div>
+    </div>
+
+    <div class="grid" style="grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); margin-top:1rem">
+        <div class="card" style="margin:0">
+            <div class="card-head">
+                <h2>Pulse Board <small class="muted">(@Visible.Count() of @_pulse.Nodes.Count shown)</small></h2>
+                <div class="pulse-filters">
+                    @foreach (var f in new[] { "All", "Silent", "Spike", "Drift", "Healthy" })
+                    {
+                        <button class="btn sm @(_filter == f ? "on" : "")" @onclick="() => _filter = f">@f</button>
+                    }
+                    <input placeholder="Filter MAC / name / zone" @bind="_search" @bind:event="oninput" style="width:190px;padding:.3rem .6rem" />
+                </div>
+            </div>
+            @if (!Visible.Any())
+            {
+                <div class="empty">No nodes match this filter.</div>
+            }
+            <div class="pulse-grid">
+                @foreach (var n in Visible)
+                {
+                    <div class="tile @n.State @(_selected?.MacAddress == n.MacAddress ? "selected" : "")" @key="n.MacAddress" @onclick="() => Select(n)" title="@n.Location">
+                        <div class="mac">@n.MacAddress</div>
+                        <div class="name">@n.Name</div>
+                        <div class="loc">@n.Location</div>
+                        <Sparkline Values="n.Sparkline" Stroke="@Colour(n.State)" />
+                        <div class="foot">
+                            <span class="state">@StateLabel(n)</span>
+                            <span class="val">@FormatValue(n)</span>
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="card" style="margin:0">
+            <div class="card-head">
+                <h2>Triage feed</h2>
+                <label style="font-size:.78rem;color:var(--text-muted)"><input type="checkbox" style="width:auto" @bind="_showAcked" /> show acknowledged</label>
+            </div>
+            <div class="triage">
+                @if (_triage.Count == 0) { <div class="empty">Nothing to triage – fleet is quiet.</div> }
+                @foreach (var t in _triage)
+                {
+                    <div class="triage-item @t.Severity @(t.IsOpen ? "" : "acked")" @key="t.Id">
+                        <div><span class="chip @t.Severity">@t.Severity.ToString().ToUpper()</span><br /><span class="chip @t.Source" style="margin-top:.25rem">@t.Source</span></div>
+                        <div>
+                            <div class="title">@t.Title</div>
+                            <div class="detail">@t.Detail</div>
+                            <div class="meta">@t.MacAddress · @t.Location · @Age(t.CreatedAt)</div>
+                        </div>
+                        <div>
+                            @if (t.IsOpen)
+                            {
+                                <button class="btn sm" @onclick="() => Ack(t)">Ack</button>
+                            }
+                            else { <small class="muted">✓ @t.AcknowledgedBy</small> }
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@if (_selected is not null)
+{
+    <div class="backdrop" @onclick="() => _selected = null"></div>
+    <div class="drawer">
+        <button class="btn sm close" @onclick="() => _selected = null">✕</button>
+        <h2>@_selected.Name</h2>
+        <div class="mono muted">@_selected.MacAddress</div>
+        <p><StateChip Value="@_selected.State.ToString()" /> <StateChip Value="@_selected.Category.ToString()" /> <small class="muted">@_selected.Location</small></p>
+
+        <div class="big-spark"><Sparkline Values="_selected.Sparkline" Stroke="@Colour(_selected.State)" Thick="true" /></div>
+
+        <dl class="kv" style="margin-top:.8rem">
+            <dt>Last value</dt><dd>@FormatValue(_selected)</dd>
+            <dt>z-score</dt><dd>@_selected.ZScore.ToString("+0.00;-0.00")</dd>
+            <dt>Last packet</dt><dd>@(_selected.LastSeen?.ToLocalTime().ToString("HH:mm:ss") ?? "never") (@_selected.SecondsSinceLastPacket.ToString("0") s ago)</dd>
+            <dt>Expected every</dt><dd>@_selected.ExpectedIntervalSeconds s</dd>
+            <dt>Payload</dt><dd>TelemetryPacket&lt;@PayloadName(_selected.Payload)&gt;</dd>
+            <dt>Window</dt><dd>@_selected.Sparkline.Count / 60 samples</dd>
+        </dl>
+
+        <h3 style="margin-top:1.2rem">Simulate a reading</h3>
+        <small class="muted">Pushes a packet through the API as if the ESP32 sent it. Try an out-of-range value to trigger a spike.</small>
+        <div class="actions">
+            @if (_selected.Payload == PayloadKind.Bool)
+            {
+                <select @bind="_simState" style="width:auto"><option value="true">ON / open</option><option value="false">OFF / closed</option></select>
+            }
+            else
+            {
+                <input type="number" step="any" @bind="_simValue" style="width:140px" placeholder="value" />
+            }
+            <button class="btn primary sm" @onclick="Simulate" disabled="@_busy">@(_busy ? "Sending…" : "Send packet")</button>
+        </div>
+        @if (_lastIngest is not null)
+        {
+            <div class="alert @(_lastIngest.State is NodeState.Spike or NodeState.Drift ? "error" : "success")" style="margin-top:.6rem">
+                <StateChip Value="@_lastIngest.State.ToString()" /> @_lastIngest.Message
+                <div class="muted" style="font-size:.76rem">μ=@_lastIngest.WindowMean σ=@_lastIngest.WindowStdDev n=@_lastIngest.WindowSize · parsed as @_lastIngest.PayloadType</div>
+            </div>
+        }
+
+        <h3 style="margin-top:1.2rem">Report an issue</h3>
+        <EditForm Model="_report" OnValidSubmit="Report">
+            <DataAnnotationsValidator />
+            <div class="field"><label>Title</label><InputText @bind-Value="_report.Title" placeholder="e.g. Pump vibrating audibly" /><ValidationMessage For="() => _report.Title" /></div>
+            <div class="field" style="margin-top:.5rem"><label>Detail</label><InputTextArea @bind-Value="_report.Detail" rows="2" /></div>
+            <div class="field" style="margin-top:.5rem"><label>Severity</label><InputSelect @bind-Value="_report.Severity">
+                @foreach (var s in Enum.GetValues<Severity>()) { <option value="@s">@s</option> }
+            </InputSelect></div>
+            <div class="actions"><button class="btn primary sm" type="submit" disabled="@_busy">Add to triage</button>
+                <a class="btn sm" href="ingestion/sensors/@_selected.SensorId">Open profile / attachments →</a></div>
+        </EditForm>
+    </div>
+}
+
+@code {
+    private const int PollSeconds = 2;
+    private FleetPulse? _pulse;
+    private List<TriageItem> _triage = new();
+    private string? _error;
+    private string _filter = "All";
+    private string _search = "";
+    private bool _showAcked;
+    private bool _paused;
+    private bool _busy;
+    private NodePulse? _selected;
+    private double _simValue = 90;
+    private string _simState = "true";
+    private TelemetryIngestResult? _lastIngest;
+    private ReportIssueRequest _report = new();
+    private readonly CancellationTokenSource _cts = new();
+
+    private IEnumerable<NodePulse> Visible => (_pulse?.Nodes ?? new())
+        .Where(n => _filter == "All" || n.State.ToString() == _filter)
+        .Where(n => string.IsNullOrWhiteSpace(_search)
+                    || n.MacAddress.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                    || n.Name.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                    || n.Location.Contains(_search, StringComparison.OrdinalIgnoreCase));
+
+    protected override void OnInitialized() => _ = PollAsync();
+
+    private async Task PollAsync()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(PollSeconds));
+        do
+        {
+            if (!_paused) await RefreshAsync();
+        } while (await timer.WaitForNextTickAsync(_cts.Token));
+    }
+
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            // Two independent async calls run concurrently; neither blocks the render thread.
+            var pulseTask = Api.GetPulseAsync(300, _cts.Token);
+            var triageTask = Api.GetTriageAsync(_showAcked, 40, _cts.Token);
+            await Task.WhenAll(pulseTask, triageTask);
+            _pulse = pulseTask.Result;
+            _triage = triageTask.Result ?? new();
+            _error = null;
+            if (_selected is not null)
+                _selected = _pulse?.Nodes.FirstOrDefault(n => n.MacAddress == _selected.MacAddress) ?? _selected;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _error = $"API unreachable: {ex.Message}"; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void TogglePause() => _paused = !_paused;
+
+    private void Select(NodePulse n)
+    {
+        _selected = n; _lastIngest = null;
+        _report = new ReportIssueRequest { MacAddress = n.MacAddress };
+        _simValue = n.Payload == PayloadKind.Int ? 2600 : 90;
+    }
+
+    private async Task Simulate()
+    {
+        if (_selected is null) return;
+        _busy = true;
+        var req = new TelemetryIngestRequest { MacAddress = _selected.MacAddress, Kind = _selected.Payload };
+        if (_selected.Payload == PayloadKind.Bool) req.State = _simState == "true"; else req.Value = _simValue;
+        var r = await Api.IngestAsync(req);
+        _busy = false;
+        if (r.Success) { _lastIngest = r.Value; Toast.Success("Packet accepted", r.Value!.Message); await RefreshAsync(); }
+        else Toast.Error("Packet rejected", r.Error);
+    }
+
+    private async Task Report()
+    {
+        if (_selected is null) return;
+        _busy = true;
+        _report.MacAddress = _selected.MacAddress;
+        var r = await Api.ReportIssueAsync(_report);
+        _busy = false;
+        if (r.Success) { Toast.Success("Issue added to triage feed"); _report = new ReportIssueRequest { MacAddress = _selected.MacAddress }; await RefreshAsync(); }
+        else Toast.Error("Could not report issue", r.Error);
+    }
+
+    private async Task Ack(TriageItem t)
+    {
+        var r = await Api.AcknowledgeAsync(t.Id, "operator");
+        if (r is not null) { Toast.Info("Acknowledged", t.Title); await RefreshAsync(); }
+    }
+
+    private static string Colour(NodeState s) => s switch
+    {
+        NodeState.Healthy => "#22c55e", NodeState.Drift => "#f59e0b", NodeState.Spike => "#f97316", NodeState.Silent => "#ef4444", _ => "#64748b"
+    };
+
+    private static string StateLabel(NodePulse n) => n.State switch
+    {
+        NodeState.Silent => $"SILENT {n.SecondsSinceLastPacket:0}s",
+        NodeState.Spike => $"SPIKE z={n.ZScore:0.0}",
+        NodeState.Drift => $"DRIFT z={n.ZScore:0.0}",
+        NodeState.Healthy => "healthy",
+        _ => "no data"
+    };
+
+    private static string FormatValue(NodePulse n) => n.LastValue is null ? "–" : n.Payload switch
+    {
+        PayloadKind.Bool => n.LastValue == 1 ? "ON" : "OFF",
+        PayloadKind.Int => $"{n.LastValue:0}{n.Unit}",
+        _ => $"{n.LastValue:0.0}{n.Unit}"
+    };
+
+    private static string PayloadName(PayloadKind k) => k switch { PayloadKind.Float => "float", PayloadKind.Int => "int", _ => "bool" };
+
+    private static string Age(DateTimeOffset t)
+    {
+        var s = (DateTimeOffset.UtcNow - t).TotalSeconds;
+        return s < 60 ? $"{s:0}s ago" : s < 3600 ? $"{s / 60:0}m ago" : $"{s / 3600:0.#}h ago";
+    }
+
+    public void Dispose() { _cts.Cancel(); _cts.Dispose(); }
+}
