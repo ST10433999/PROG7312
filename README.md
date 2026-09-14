@@ -3,7 +3,7 @@
 > Portfolio of Evidence — *The Smart-X IoT Mesh Ecosystem*
 > Backend: **ASP.NET Core Minimal API on .NET 10** · Frontend: **Blazor WebAssembly** · Shared domain library in C#
 
-Smart-X is a hybrid IoT ecosystem in which thousands of ESP32 nodes publish multi-typed telemetry — `float` soil moisture, `int` wattage, `bool` valve states — to a central gateway. Part 1 delivers the **ingestion and validation gateway**: sensor registration, typed telemetry ingestion, encrypted media/log attachments, and a live **Node Pulse Board** with anomaly triage (the engagement strategy chosen in the Task 1 research report, included as [`docs/SmartX_Part1_Task1_Research_Report.pdf`](docs/SmartX_Part1_Task1_Research_Report.pdf)).
+Smart-X is a hybrid IoT ecosystem in which thousands of ESP32 nodes publish multi-typed telemetry — `float` soil moisture, `int` wattage, `bool` valve states — to a central gateway. Part 1 delivers the **ingestion and validation gateway**: sensor registration, typed telemetry ingestion, encrypted media/log attachments, and a live **Node Pulse Board** with anomaly triage (the engagement strategy chosen in the Task 1 research report, included as [`docs/PROG7312_POE_Part1_Research_Report.pdf`](docs/PROG7312_POE_Part1_Research_Report.pdf)).
 
 ---
 
