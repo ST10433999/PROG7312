@@ -50,7 +50,7 @@ public static class SensorEndpoints
             if (!string.IsNullOrWhiteSpace(req.SubZone)) path.Add(req.SubZone);
             var placement = TopologyValidator.ValidatePlacement(state.Topology, new NodePlacementRequest
                 { MacAddress = mac, Path = path, Category = req.Category, PublishIntervalSeconds = req.PublishIntervalSeconds, RatedWatts = req.Category == SensorCategory.PowerConsumption ? 150 : 0 });
-            var blocking = placement.Issues.Where(i => i.Severity >= Severity.High && i.Rule is not ("TierNotFound" or "UnknownRoot")).ToList();
+            var blocking = placement.Issues.Where(i => i.Severity >= Severity.High && i.Rule != "UnknownRoot").ToList();
             if (blocking.Count > 0)
                 return TypedResults.ValidationProblem(new Dictionary<string, string[]> { ["deployment"] = blocking.Select(b => b.Message).ToArray() });
 

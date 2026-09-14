@@ -177,8 +177,20 @@ public static class TopologyValidator
         var next = node.Children.FirstOrDefault(c => string.Equals(c.Name, nextName, StringComparison.OrdinalIgnoreCase));
         if (next is null)
         {
-            result.Issues.Add(new ValidationIssue { Path = $"{path} → {nextName}", Rule = "TierNotFound", Severity = Severity.Critical,
-                Message = $"'{node.Name}' has no child tier named '{nextName}'." });
+            // The remaining tiers do not exist yet (registration will create them). A new tier inherits the
+            // constraints in force here, so validate the node against THIS tier's effective config rather than
+            // letting an unknown sub-zone bypass the parent's rules.
+            var remaining = string.Join(" → ", request.Path.Skip(index + 1));
+            result.Trace.Add($"{new string(' ', index * 2)}  · '{remaining}' does not exist yet – will be created under '{node.Name}', inheriting its constraints");
+            result.Issues.Add(new ValidationIssue { Path = $"{path} → {remaining}", Rule = "TierWillBeCreated", Severity = Severity.Info,
+                Message = $"'{nextName}' is a new tier under '{node.Name}'." });
+            var truncated = new NodePlacementRequest
+            {
+                MacAddress = request.MacAddress, Category = request.Category, RatedWatts = request.RatedWatts,
+                PublishIntervalSeconds = request.PublishIntervalSeconds,
+                Path = request.Path.Take(index + 1).Append(nextName).ToList()
+            };
+            Descend(new DeploymentNode(nextName, "Tier"), truncated, index + 1, effective, $"{path} → {nextName}", result);
             return;
         }
         Descend(next, request, index + 1, effective, $"{path} → {next.Name}", result);
