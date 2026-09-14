@@ -1,9 +1,9 @@
-# Smart-X · Data Ingestion & Validation Gateway (Part 1)
+# PROG7312 · Smart-X Data Ingestion & Validation Gateway (Part 1)
 
 > Portfolio of Evidence — *The Smart-X IoT Mesh Ecosystem*
 > Backend: **ASP.NET Core Minimal API on .NET 10** · Frontend: **Blazor WebAssembly** · Shared domain library in C#
 
-Smart-X is a hybrid IoT ecosystem in which thousands of ESP32 nodes publish multi-typed telemetry — `float` soil moisture, `int` wattage, `bool` valve states — to a central gateway. Part 1 delivers the **ingestion and validation gateway**: sensor registration, typed telemetry ingestion, encrypted media/log attachments, and a live **Node Pulse Board** with anomaly triage (the engagement strategy chosen in the Task 1 research report).
+Smart-X is a hybrid IoT ecosystem in which thousands of ESP32 nodes publish multi-typed telemetry — `float` soil moisture, `int` wattage, `bool` valve states — to a central gateway. Part 1 delivers the **ingestion and validation gateway**: sensor registration, typed telemetry ingestion, encrypted media/log attachments, and a live **Node Pulse Board** with anomaly triage (the engagement strategy chosen in the Task 1 research report, included as [`docs/SmartX_Part1_Task1_Research_Report.pdf`](docs/SmartX_Part1_Task1_Research_Report.pdf)).
 
 ---
 
@@ -66,7 +66,7 @@ Install the .NET 10 SDK from <https://dotnet.microsoft.com/download/dotnet/10.0>
 
 ```bash
 # 1. Clone
-git clone <your-github-repo-url> SmartX
+git clone https://github.com/ST10433999/PROG7312.git SmartX
 cd SmartX
 
 # 2. Restore dependencies (NuGet) for all three projects
