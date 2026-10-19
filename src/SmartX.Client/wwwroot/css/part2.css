@@ -1,0 +1,85 @@
+/* ------------------------------------------------------------------
+   Smart-X Gateway – Part 2 (Real-Time Command Stream) styles.
+   Loaded after app.css and built only from the Part 1 design tokens,
+   so the new pages match the existing dark theme.
+   ------------------------------------------------------------------ */
+
+.cs-grid { display: grid; gap: 1rem; margin-top: 1rem; grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); }
+@media (max-width: 1200px) { .cs-grid { grid-template-columns: 1fr; } }
+.cs-grid > .card { margin: 0; }
+
+.stat.queue .value { color: var(--info); }
+.stat.critical .value { color: var(--silent); }
+.stat .sub { font-size: .7rem; color: var(--text-dim); }
+
+/* ---------- device simulator ---------- */
+.sim-row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: flex-end; }
+.sim-row .field { min-width: 160px; }
+.sim-row .field.wide { flex: 1 1 260px; }
+.sim-result { margin-top: .7rem; font-size: .84rem; }
+.route-chip { font-family: var(--mono); font-size: .7rem; font-weight: 700; padding: .1rem .5rem; border-radius: 999px; }
+.route-chip.Fifo { background: rgba(56,189,248,.15); color: var(--info); }
+.route-chip.Priority { background: rgba(239,68,68,.2); color: var(--silent); }
+.route-chip.SuppressedDuplicate { background: rgba(245,158,11,.18); color: var(--drift); }
+
+/* ---------- suggestions ---------- */
+.suggestions { display: flex; flex-direction: column; gap: .55rem; }
+.suggestion { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: .8rem; align-items: center; padding: .65rem .8rem; border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; background: var(--bg-elev); }
+.suggestion.Insight { border-left-color: var(--drift); }
+.suggestion.InspectDevice { border-left-color: var(--info); }
+.suggestion .pct { text-align: center; font-size: 1.25rem; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.suggestion.Insight .pct { color: var(--drift); }
+.suggestion.InspectDevice .pct { color: var(--info); }
+.suggestion .title { font-weight: 600; font-size: .9rem; }
+.suggestion .why { font-size: .78rem; color: var(--text-muted); }
+.suggestion .trigger { font-size: .68rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; margin-top: .15rem; }
+
+/* ---------- alerts & faults ---------- */
+.alert-list { display: flex; flex-direction: column; gap: .45rem; max-height: 340px; overflow-y: auto; }
+.alert-row { display: grid; grid-template-columns: 74px minmax(0, 1fr) auto; gap: .6rem; align-items: start; padding: .5rem .65rem; border: 1px solid var(--border); border-left: 4px solid var(--silent); border-radius: 8px; background: var(--bg-elev); }
+.alert-row.High { border-left-color: var(--spike); }
+.alert-row.Warn { border-left-color: var(--drift); }
+.alert-row.pending { border-style: dashed; }
+.alert-row.acked { opacity: .5; }
+.alert-row .title { font-weight: 600; font-size: .86rem; }
+.alert-row .meta { font-size: .7rem; color: var(--text-dim); font-family: var(--mono); overflow-wrap: anywhere; }
+.alert-row .jump { font-size: .74rem; color: var(--accent); }
+.fault-row { display: flex; justify-content: space-between; gap: .6rem; align-items: center; padding: .4rem .6rem; border-bottom: 1px solid var(--border); font-size: .84rem; }
+.fault-row:last-child { border-bottom: none; }
+.fault-row .reason { font-size: .74rem; color: var(--text-muted); }
+
+/* ---------- devices ---------- */
+.bulk-bar { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-bottom: .8rem; }
+.bulk-bar .label { font-size: .72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+.device-table td { white-space: normal; vertical-align: top; }
+.device-table .name { font-weight: 600; }
+.device-table .loc { font-size: .74rem; color: var(--text-dim); }
+.device-table tr.row-alert td { background: rgba(239,68,68,.07); }
+.device-table tr.row-suggested td { background: var(--accent-dim); }
+.row-actions { display: flex; flex-wrap: wrap; gap: .3rem; }
+.btn.danger-solid { background: var(--silent); border-color: var(--silent); color: #fff; }
+.btn.danger-solid:hover { filter: brightness(1.1); background: var(--silent); }
+.star { color: var(--accent); font-weight: 700; margin-right: .25rem; }
+
+.chip.st-ON { background: rgba(34,197,94,.15); color: var(--healthy); }
+.chip.st-OFF { background: rgba(100,116,139,.2); color: var(--text-muted); }
+.chip.st-RUNNING { background: rgba(56,189,248,.15); color: var(--info); }
+.chip.st-IDLE { background: rgba(167,139,250,.18); color: #a78bfa; }
+.chip.st-STOPPED { background: rgba(239,68,68,.2); color: var(--silent); }
+.chip.fault { background: rgba(239,68,68,.2); color: var(--silent); }
+
+/* ---------- history ---------- */
+.history { display: flex; flex-direction: column; gap: .45rem; max-height: 560px; overflow-y: auto; padding-right: .3rem; }
+.history-row { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: .6rem; padding: .45rem .6rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); font-size: .84rem; }
+.history-row.undone { opacity: .5; }
+.history-row.undone .what { text-decoration: line-through; }
+.history-row .ts { font-family: var(--mono); font-size: .74rem; color: var(--text-muted); }
+.history-row .meta { font-size: .72rem; color: var(--text-dim); }
+.history-row .reason { font-size: .74rem; color: var(--text-muted); font-style: italic; }
+.history-table td { white-space: normal; }
+.history-table tr.undone td { opacity: .5; }
+
+/* ---------- timeline ---------- */
+.timeline-graph svg { width: 100%; height: 140px; display: block; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; }
+.timeline-stats { display: flex; gap: 1.2rem; flex-wrap: wrap; font-size: .8rem; color: var(--text-muted); margin-top: .5rem; }
+.timeline-stats b { color: var(--text); font-family: var(--mono); }
