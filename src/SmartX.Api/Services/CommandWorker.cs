@@ -10,7 +10,9 @@ namespace SmartX.Api.Services;
 //   1. drains the PriorityQueue completely – critical alerts are always handled first;
 //   2. processes up to Stream:TelemetryPerTick packets from the FIFO Queue (default 8, i.e. 32/s),
 //      so a burst builds a visible backlog that critical packets can be seen to overtake;
-//   3. executes every queued operator command.
+//   3. executes every queued operator command;
+//   4. every 2 s, mirrors Part 1 "Sensor disconnect" alerts into the PriorityQueue (the HashSet
+//      stops repeats) and clears disconnect faults for nodes that are publishing again.
 // -------------------------------------------------------------------------------------------------
 
 public sealed class CommandWorker(
@@ -20,6 +22,10 @@ public sealed class CommandWorker(
     IConfiguration config,
     ILogger<CommandWorker> logger) : BackgroundService
 {
+    private const string DisconnectReason = "disconnect";
+    private DateTimeOffset _lastTriageSync = DateTimeOffset.UtcNow;
+    private int _tick;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var perTick = Math.Clamp(config.GetValue("Stream:TelemetryPerTick", 8), 1, 10_000);
@@ -41,6 +47,10 @@ public sealed class CommandWorker(
                 // 3. Operator commands.
                 while (stream.DequeueCommand() is { } envelope)
                     ExecuteCommand(envelope);
+
+                // 4. Part 1 integration, every 8th tick.
+                if (++_tick % 8 == 0)
+                    SyncPart1Faults();
             }
             catch (Exception ex)
             {
@@ -113,6 +123,51 @@ public sealed class CommandWorker(
         catch (KeyNotFoundException ex)
         {
             logger.LogWarning("Dropped command '{Label}': {Reason}", envelope.Label, ex.Message);
+        }
+    }
+
+    private void SyncPart1Faults()
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        // New Part 1 disconnect alerts → PriorityQueue. TryRaiseCritical's HashSet check drops repeats.
+        var feed = gateway.TriageFeed(includeAcknowledged: true, take: 500);
+        var since = _lastTriageSync;
+        var newDisconnects = feed
+            .Where(t => t.CreatedAt > since && t.Source == TriageSource.System && t.Title == "Sensor disconnect")
+            .ToList();
+        if (feed.Count > 0)
+        {
+            var newest = feed.Max(t => t.CreatedAt);
+            if (newest > _lastTriageSync) _lastTriageSync = newest;
+        }
+
+        foreach (var t in newDisconnects)
+        {
+            var name = gateway.Sensors.TryGetValue(t.MacAddress, out var s) ? s.Name : t.MacAddress;
+            stream.TryRaiseCritical(new CriticalAlert
+            {
+                Id = Guid.NewGuid(),
+                MacAddress = t.MacAddress,
+                DeviceName = name,
+                Severity = Severity.Critical,
+                Source = AlertSource.Device,
+                Title = "Sensor disconnect",
+                Detail = t.Detail,
+                RaisedAt = now,                       // the moment it entered the PriorityQueue
+                ConditionKey = $"{t.MacAddress}|disconnect"
+            }, DisconnectReason, isDevice: false);
+        }
+
+        // Disconnect faults clear once the node publishes again.
+        foreach (var fault in stream.Faults().Where(f => f.Reason == DisconnectReason))
+        {
+            if (gateway.Channels.TryGetValue(fault.MacAddress, out var channel)
+                && channel.LastSeen is { } lastSeen
+                && (now - lastSeen).TotalSeconds < channel.Profile.PublishIntervalSeconds * 3)
+            {
+                stream.ClearFault(fault.MacAddress, DisconnectReason);
+            }
         }
     }
 }
