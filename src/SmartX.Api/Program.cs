@@ -11,6 +11,11 @@ builder.Services.AddSingleton<GatewayState>();
 builder.Services.AddSingleton<AttachmentService>();
 builder.Services.AddHostedService<TelemetrySimulator>();
 
+// Part 2 — Real-Time Command Stream & History
+builder.Services.AddSingleton<CommandStreamState>();
+builder.Services.AddSingleton<PredictiveEngine>();
+builder.Services.AddHostedService<CommandWorker>();
+
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
     o.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
@@ -38,18 +43,25 @@ var app = builder.Build();
 var state = app.Services.GetRequiredService<GatewayState>();
 MockDataSeeder.Seed(state, app.Configuration.GetValue("Seed:SensorCount", 240), app.Logger);
 
+var commandStream = app.Services.GetRequiredService<CommandStreamState>();
+DeviceRegistrySeeder.Seed(commandStream, app.Configuration.GetValue("Seed:DeviceCount", 24), app.Logger);
+
 // ---- pipeline -------------------------------------------------------------
 app.UseCors();
 app.MapOpenApi();                                  // /openapi/v1.json
 
 app.MapGet("/", () => Results.Redirect("/api/health"));
-app.MapGet("/api/health", (GatewayState s) => Results.Ok(new
+app.MapGet("/api/health", (GatewayState s, CommandStreamState cs) => Results.Ok(new
 {
     status = "ok",
     service = "Smart-X Ingestion Gateway",
     runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
     sensors = s.Sensors.Count,
     packetsIngested = s.TotalPackets,
+    devices = cs.DeviceCount,
+    telemetryQueueDepth = cs.TelemetryQueueDepth,
+    pendingCriticalAlerts = cs.PendingCriticalCount,
+    activeFaults = cs.ActiveFaultCount,
     utc = DateTimeOffset.UtcNow
 })).WithTags("Gateway");
 
@@ -58,5 +70,6 @@ api.MapSensorEndpoints();
 api.MapAttachmentEndpoints();
 api.MapTelemetryEndpoints();
 api.MapPulseEndpoints();
+api.MapCommandStreamEndpoints();                   // Part 2
 
 app.Run();
