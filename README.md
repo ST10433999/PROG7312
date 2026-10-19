@@ -1,4 +1,4 @@
-# PROG7312 · Smart-X Data Ingestion & Validation Gateway (Part 1)
+# PROG7312 · Smart-X Data Ingestion & Validation Gateway (Parts 1 & 2)
 
 > Portfolio of Evidence — *The Smart-X IoT Mesh Ecosystem*
 > Backend: **ASP.NET Core Minimal API on .NET 10** · Frontend: **Blazor WebAssembly** · Shared domain library in C#
@@ -247,3 +247,122 @@ SmartX/
 ---
 
 Part 1 of the Smart-X PoE · Muhammed Suliman · Emeris University (The Independent Institute of Education) · 2026
+
+
+---
+
+## 11. Part 2 — Real-Time Command Stream & History
+
+Part 2 turns the gateway into a real-time processing engine. Devices publish telemetry to a new stream endpoint; normal packets join a FIFO queue, critical packets jump it, operators send undoable overrides to actuators, and a predictive engine learns how operators respond to alerts so it can suggest the response next time.
+
+```
+ ESP32 / simulator ──POST /api/stream/telemetry──▶ StreamRouter
+                                                   │  normal ─────────────▶ Queue<TelemetryIngestRequest>  (FIFO)
+                                                   │  critical (new) ─────▶ PriorityQueue<CriticalAlert,(severity,seq)>
+                                                   │  critical (repeat) ──▶ dropped by HashSet<string> active faults
+                                                   ▼
+                              CommandWorker (every 250 ms): PriorityQueue first → ≤ 8 FIFO packets → commands
+                                                   │
+          Part 1 pipeline (TelemetryPacket<T>, ring buffer, z-score) ◀──┘──▶ SortedDictionary timeline
+ Dashboard ──POST /api/commands[/bulk]──▶ Queue<CommandEnvelope> ──▶ Dictionary<string,SmartDevice> ──▶ Stack<CommandBatch> (undo)
+                                                                                                  └──▶ SortedDictionary history
+ Alerts + operator actions ──▶ PredictiveEngine (sequential association rules) ──▶ "Suggested actions & insights"
+```
+
+### 11.1 Data structures and where to see them
+
+| Rubric item | Collection | Code | Visible on `/command-stream` |
+| --- | --- | --- | --- |
+| Message queue (FIFO) | `Queue<TelemetryIngestRequest>` | `CommandStreamState._telemetryQueue` | **Telemetry FIFO** counter. The worker drains 8 packets every 250 ms, so a burst builds a backlog you can watch shrink. |
+| Priority queue | `PriorityQueue<CriticalAlert, (int Severity, long Sequence)>` | `CommandStreamState._criticalAlerts` | **Critical alerts** card: each processed alert shows its latency and *"ahead of N queued packets"*. The sequence number keeps equal-severity alerts in arrival order (the BCL priority queue is not stable on its own). |
+| Stack (undo) | `Stack<CommandBatch>` | `CommandStreamState._undoStack` | **↶ Undo** button (shows the action it will revert). A bulk override such as *Shut down all valves* is one stack entry, so one Undo restores every valve to its previous state. |
+| Dictionary — O(1) lookup | `Dictionary<string, SmartDevice>` keyed by MAC | `CommandStreamState._devices` | Device table, commands, E-STOP and suggestions all resolve devices by MAC. Sensors are resolved through Part 1's `ConcurrentDictionary` on every streamed packet. |
+| Sorted dictionary — timeline | `SortedDictionary<StreamKey, TimelinePoint>` | `CommandStreamState._timeline` | **Sensor timeline** graph – values come out already in timestamp order, so the graph needs no sort. |
+| Sorted dictionary — history | `SortedDictionary<StreamKey, CommandRecord>` | `CommandStreamState._commandHistory` | **Recent history** panel and `/command-stream/history`. `StreamKey` = (timestamp, sequence) so two items on the same tick never collide. |
+| Hash set — unique faults | `HashSet<string>` | `CommandStreamState._activeFaults` | **Active faults** card and the *duplicates dropped* counter. `Add()` returning false is what suppresses a repeat alert for a node that is already faulted. |
+| Predictive engine | `Dictionary<string, Dictionary<string,int>>` pair counts + `Queue<ConditionEvent>` sliding window | `PredictiveEngine` | **🧠 Suggested actions & insights** panel; suggested devices get a ★ and move to the top of the table. |
+
+### 11.2 How the predictive engine works
+
+The engine mines **sequential association rules** over a 10-minute sliding window:
+
+1. *Conditions* are processed critical alerts – e.g. `Soil probe 000: Critical moisture drop: 12% (below 20%)`, a sensor disconnect, or an operator E-STOP.
+2. *Actions* are what the operator does next – issuing a command on a device, or searching for a device on the dashboard (searches are reported to `POST /api/suggestions/search` after an 800 ms debounce and count only when they identify exactly one device).
+3. Each action is credited once to every condition in the window. When a condition fires again, every action that has followed it at least **twice** is proposed with
+   `confidence = times the action followed the condition ÷ earlier occurrences of the condition`.
+4. Insights are added on top: devices or sensors with unresolved faults, and nodes that raised three or more alerts in the window.
+
+This is the brief's example: if an operator searches for *Pump 01* after *Soil probe 000* drops below 20 %, the third time the moisture drops Pump 01 is highlighted and *TurnOn · Pump 01* is offered before anyone searches.
+
+### 11.3 How to test it
+
+Start the API and client (`dotnet run --project src/SmartX.Api`, `dotnet run --project src/SmartX.Client`) and open <http://localhost:5100/command-stream>. Everything below can also be run from a terminal with `./scripts/simulate-devices.sh` (pass `http://localhost:8080` when using Docker).
+
+| What to prove | Steps | Expected |
+| --- | --- | --- |
+| **FIFO queue** | Click **📦 Burst 200 normal packets**. | *Telemetry FIFO* jumps to ~200 and drains at ~32 packets/s; *Packets processed* climbs. |
+| **Simulate a high-priority alert** | Straight after the burst, click **⚡ Power spike (2 600 W)** (or **💧 Critical moisture drop**). | The toast says the packet went to the PriorityQueue; in **Critical alerts** it is processed within ~250 ms *"ahead of N queued packets"* while the FIFO is still draining. |
+| **Same thing with curl** | `curl -X POST http://localhost:5200/api/stream/telemetry -H "content-type: application/json" -d '{"macAddress":"<meter MAC>","kind":"Int","value":2600}'` | `202 Accepted` with `"route":"Priority"`. |
+| **HashSet duplicate suppression** | Click **⚡ Power spike** again for the same meter. | `"route":"SuppressedDuplicate"`; *duplicates dropped* goes up by one and no second alert appears. Send a normal value (e.g. 1230) and the fault clears, so the next spike alerts again. |
+| **Stack undo** | Click **On** for a pump, then **↶ Undo: TurnOn Pump 01**. Then click **⛔ Shut down all valves** and **↶ Undo** once. | The pump returns to its previous state; one Undo restores all four valves. Undone records are struck through in the history. |
+| **E-STOP** | Click **E-STOP** on any device, then **Reset**. | The device goes STOPPED and into the fault set; Reset clears it. |
+| **Dictionary lookup / search** | Type `Pump 01` (or a MAC fragment) in the device search box. | The table filters instantly; after 0.8 s the search is reported to the engine. |
+| **Sorted timeline** | Pick the soil probe or meter in **📈 Sensor timeline**. | Processed values plotted in timestamp order, including critical points. |
+| **Predictive engine** | Choose *Soil probe 000*, then repeat twice: **💧 Critical moisture drop** → search `Pump 01` → **On** for Pump 01 → set value to `48` and **Send reading** (clears the fault). Then click **💧** a third time. | *Run: TurnOn · Pump 01* (100 %, seen 2×) and *Check Pump 01* appear before you search; Pump 01 gets a ★ and moves to the top. `GET /api/suggestions/stats` shows the learned rules. |
+
+Thresholds (in `StreamRouter.cs`): soil moisture below 20 % → Critical, above 85 % → High; power above 2 000 W → Critical.
+
+### 11.4 Part 2 API reference
+
+Base URL `http://localhost:5200/api` (Docker: `http://localhost:8080/api`).
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| POST | `/stream/telemetry` | A device publishes one reading. `202` with `route` = `Fifo`, `Priority` or `SuppressedDuplicate`. |
+| POST | `/stream/telemetry/batch` | A burst of readings (≤ 2 000). |
+| GET | `/stream/queue` | FIFO depth, pending critical alerts, command queue depth, processed/rejected counts. |
+| GET | `/stream/timeline?mac=&take=` | Processed readings in timestamp order (SortedDictionary). |
+| GET | `/stream/timeline/sensors` | Sensors present in the timeline. |
+| GET | `/commands/stream` | Everything the dashboard renders, in one call. |
+| POST | `/commands` | Override one device: `{ macAddress, command, priority, reason }`. |
+| POST | `/commands/bulk` | Override every device of a `kind` and/or `category`. |
+| POST | `/commands/undo` | Pop the last action off the Stack and restore previous states. |
+| GET | `/commands/history?mac=&take=` | Executed commands, newest first. |
+| GET | `/alerts/pending` · `/alerts/recent` | Alerts waiting in / processed from the PriorityQueue. |
+| POST | `/alerts/critical` | Raise an alert manually (dropped if the node is already faulted). |
+| POST | `/alerts/{id}/acknowledge` | Mark a processed alert as dispatched. |
+| GET | `/devices?q=&inAlert=` · `/devices/{mac}` | Search the registry / O(1) lookup by MAC. |
+| GET | `/devices/faults` · POST `/devices/{mac}/clear-fault` | The active-fault HashSet. |
+| GET | `/suggestions` · `/suggestions/stats` | Recommendations / what the engine has learned. |
+| POST | `/suggestions/search` | Report an operator search `{ term }`. |
+
+### 11.5 Configuration added in Part 2
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `Seed:DeviceCount` | `24` | Operational devices seeded into the Dictionary (pumps, valves, relays, heating pads, fans, grow lights). |
+| `Stream:TelemetryPerTick` | `8` | FIFO packets processed per 250 ms tick (8 → 32 packets/s). Raise it to drain bursts faster. |
+
+### 11.6 Files added or changed in Part 2
+
+```
+src/SmartX.Shared/Commands/                        NEW   DeviceModels, CommandModels, StreamModels, AlertModels,
+                                                         SuggestionModels, CommandStreamSnapshot (shared DTOs)
+src/SmartX.Api/Services/CommandStreamState*.cs     NEW   one partial file per structure: Dictionary (core), Queue (Telemetry),
+                                                         PriorityQueue + HashSet (Alerts), SortedDictionary (Timeline),
+                                                         command Queue + Stack + SortedDictionary (Commands)
+src/SmartX.Api/Services/TelemetryRules.cs          NEW   thresholds that make a reading critical
+src/SmartX.Api/Services/StreamRouter.cs            NEW   FIFO / PriorityQueue / duplicate routing
+src/SmartX.Api/Services/PredictiveEngine*.cs       NEW   observation + suggestion halves of the engine
+src/SmartX.Api/Services/CommandWorker.cs           NEW   BackgroundService that processes the queues
+src/SmartX.Api/Services/DeviceRegistrySeeder.cs    NEW   seeds the operational devices
+src/SmartX.Api/Endpoints/*Endpoints.cs             NEW   Stream, Command, Alert, Device, Suggestion groups + CommandStreamEndpoints
+src/SmartX.Api/Program.cs, appsettings.json        EDIT  Part 2 services, endpoints and settings
+src/SmartX.Client/Pages/CommandStream.razor        NEW   live dashboard
+src/SmartX.Client/Pages/CommandHistory.razor       NEW   full command history
+src/SmartX.Client/wwwroot/css/part2.css            NEW   Part 2 styles; linked from wwwroot/index.html
+src/SmartX.Client/Pages/Home.razor, Layout/MainLayout.razor, Services/GatewayApiClient.cs, _Imports.razor   EDIT
+docker-compose.yml                                 EDIT  Seed__DeviceCount, Stream__TelemetryPerTick
+scripts/simulate-devices.sh                        NEW   curl device simulator / smoke test
+docs/Part2_Demo_Script.md                          NEW   video walkthrough
+```
