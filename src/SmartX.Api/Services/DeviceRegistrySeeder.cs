@@ -35,12 +35,22 @@ public static class DeviceRegistrySeeder
                 Kind = tmpl.Kind,
                 Location = tmpl.Location,
                 Category = tmpl.Category,
-                CurrentState = "OFF",
+                CurrentState = InitialState(tmpl.Kind),
                 InAlertState = false
             });
         }
         logger.LogInformation("Seeded {Count} operational devices into the Command Stream registry.", count);
     }
+
+    /// <summary>
+    /// Start-up state of a running facility: valves irrigating, fans and grow lights on, the rest idle off.
+    /// This way a bulk shut-down visibly changes state and Undo visibly restores it.
+    /// </summary>
+    private static string InitialState(DeviceKind kind) => kind switch
+    {
+        DeviceKind.IrrigationValve or DeviceKind.VentilationFan or DeviceKind.GrowLight => "ON",
+        _ => "OFF"
+    };
 
     private static string GenerateMac(Random r)
     {
