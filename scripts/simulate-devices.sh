@@ -8,6 +8,7 @@
 #   ./scripts/simulate-devices.sh http://localhost:8080   # API in Docker
 # -----------------------------------------------------------------------------
 set -euo pipefail
+export LC_ALL=C   # force "48.2" not "48,2" on locales with a decimal comma, so the JSON stays valid
 API="${1:-http://localhost:5200}"
 
 json_post() { curl -s -X POST "$API$1" -H 'content-type: application/json' -d "$2"; echo; }
