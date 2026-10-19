@@ -129,7 +129,7 @@ public sealed partial class CommandStreamState
                     BatchId = reverse.Id,
                     MacAddress = device.MacAddress,
                     DeviceName = device.Name,
-                    Command = Inverse(original.Command),
+                    Command = CommandFor(original.PreviousState),
                     Priority = original.Priority,
                     Reason = $"Undo of {original.Command}",
                     Timestamp = now,
@@ -143,6 +143,9 @@ public sealed partial class CommandStreamState
                 reverse.Records.Add(record);
             }
 
+            // Label the undo batch with the restoring command when every device went back the same way.
+            var restoring = reverse.Records.Select(r => r.Command).Distinct().ToList();
+            if (restoring.Count == 1) reverse.Command = restoring[0];
             return reverse;
         }
     }
@@ -172,6 +175,16 @@ public sealed partial class CommandStreamState
     {
         CommandKind.TurnOn => CommandKind.TurnOff,
         CommandKind.TurnOff => CommandKind.TurnOn,
+        _ => CommandKind.Reset
+    };
+
+    /// <summary>The command that puts a device back into <paramref name="state"/> (used by Undo).</summary>
+    public static CommandKind CommandFor(string state) => state switch
+    {
+        "ON" => CommandKind.TurnOn,
+        "OFF" => CommandKind.TurnOff,
+        "RUNNING" => CommandKind.Trigger,
+        "STOPPED" => CommandKind.EmergencyStop,
         _ => CommandKind.Reset
     };
 
