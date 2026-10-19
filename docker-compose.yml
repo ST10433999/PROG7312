@@ -9,7 +9,10 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       Seed__SensorCount: "240"
+      Seed__DeviceCount: "24"
       Simulator__Enabled: "true"
+      # Part 2: FIFO packets processed per 250 ms tick (8 → 32 packets/s)
+      Stream__TelemetryPerTick: "8"
       Cors__AllowedOrigins__0: "http://localhost:8081"
       # Optional: 32-byte base64 key for AES-256 attachment encryption (a dev key is derived if empty)
       Attachments__AesKeyBase64: ""
