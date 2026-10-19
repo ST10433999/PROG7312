@@ -1,0 +1,867 @@
+@page "/command-stream"
+@inject GatewayApiClient Api
+@inject ToastService Toast
+@implements IDisposable
+
+<PageTitle>Real-Time Command Stream · Smart-X</PageTitle>
+
+<div class="card-head">
+    <div>
+        <h1>Real-Time Command Stream &amp; History</h1>
+        <small>
+            Device telemetry flows through a FIFO <code>Queue&lt;T&gt;</code>; critical readings jump it via a
+            <code>PriorityQueue</code>. Overrides are undoable through a <code>Stack&lt;T&gt;</code>, devices live in a
+            <code>Dictionary</code>, history and timelines in <code>SortedDictionary</code>s, and active faults in a <code>HashSet</code>.
+        </small>
+    </div>
+    <div class="actions" style="margin:0">
+        <span><span class="live-dot @(_paused ? "paused" : "")"></span><small>@(_paused ? "Paused" : "Live · every 1 s")</small></span>
+        <button class="btn sm" @onclick="TogglePause">@(_paused ? "▶ Resume" : "⏸ Pause")</button>
+        <button class="btn sm" @onclick="UndoLast" disabled="@(_busy || (_snapshot?.UndoStackDepth ?? 0) == 0)">@UndoButtonText</button>
+        <a class="btn sm" href="command-stream/history">📜 Full history</a>
+    </div>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert error">@_error</div>
+}
+
+@if (_snapshot is null && _error is null)
+{
+    <div class="empty"><span class="spinner" style="display:inline-block"></span> Loading command stream…</div>
+}
+
+@if (_snapshot is not null)
+{
+    <div class="stats">
+        <div class="stat queue"><div class="label">Telemetry FIFO</div><div class="value">@_snapshot.TelemetryQueueDepth</div><div class="sub">Queue&lt;T&gt; depth</div></div>
+        <div class="stat critical"><div class="label">Critical pending</div><div class="value">@_snapshot.PendingCriticalAlerts</div><div class="sub">PriorityQueue · @_snapshot.CriticalProcessed processed</div></div>
+        <div class="stat"><div class="label">Packets processed</div><div class="value">@_snapshot.TelemetryProcessed.ToString("N0")</div><div class="sub">@_snapshot.TelemetryRejected rejected</div></div>
+        <div class="stat"><div class="label">Undo stack</div><div class="value">@_snapshot.UndoStackDepth</div><div class="sub">Stack&lt;T&gt; · @_snapshot.CommandQueueDepth queued</div></div>
+        <div class="stat silent"><div class="label">Active faults</div><div class="value">@_snapshot.ActiveFaultCount</div><div class="sub">HashSet · @_snapshot.DuplicatesSuppressed duplicates dropped</div></div>
+        <div class="stat"><div class="label">Devices</div><div class="value">@_snapshot.DeviceCount</div><div class="sub">Dictionary · O(1) by MAC</div></div>
+    </div>
+
+    <div class="cs-grid">
+        @* ---------------------------------------------------------------- device simulator *@
+        <div class="card">
+            <div class="card-head">
+                <h2>📡 Device simulator</h2>
+                <small class="muted">POSTs to <code>/api/stream/telemetry</code> exactly like an ESP32</small>
+            </div>
+            @if (_sensors.Count == 0)
+            {
+                <div class="empty">Loading sensors…</div>
+            }
+            else
+            {
+                <div class="sim-row">
+                    <div class="field wide">
+                        <label>Sensor</label>
+                        <select @bind="_simMac" @bind:after="OnSimSensorChanged">
+                            @foreach (var sensor in _sensors)
+                            {
+                                <option value="@sensor.MacAddress">@SensorOption(sensor)</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>Value</label>
+                        <input type="number" step="any" @bind="_simValue" />
+                    </div>
+                    <button class="btn primary" @onclick="SendReading" disabled="@_busy">Send reading</button>
+                </div>
+                <div class="actions">
+                    <button class="btn sm" @onclick="SendCriticalMoisture" disabled="@_busy">💧 Critical moisture drop (12 %)</button>
+                    <button class="btn sm" @onclick="SendPowerSpike" disabled="@_busy">⚡ Power spike (2 600 W)</button>
+                    <button class="btn sm" @onclick="SendBurst" disabled="@_busy">📦 Burst 200 normal packets</button>
+                </div>
+                <small class="muted">Moisture below 20 % or above 85 %, or power above 2 000 W, goes to the PriorityQueue. Everything else joins the FIFO, which is drained at 32 packets/s.</small>
+                @if (_lastStream is not null)
+                {
+                    <div class="sim-result"><span class="route-chip @_lastStream.Route">@_lastStream.Route</span> @_lastStream.Message</div>
+                }
+            }
+        </div>
+
+        @* ---------------------------------------------------------------- predictive engine *@
+        <div class="card">
+            <div class="card-head">
+                <h2>🧠 Suggested actions &amp; insights</h2>
+                <small class="muted">learned from alert → operator-action patterns</small>
+            </div>
+            @if (_snapshot.Suggestions.Count == 0)
+            {
+                <div class="empty">Nothing to suggest yet. Raise the same critical alert and respond to it the same way twice – on the third occurrence the engine proposes your response before you act.</div>
+            }
+            else
+            {
+                <div class="suggestions">
+                    @foreach (var suggestion in _snapshot.Suggestions)
+                    {
+                        <div class="suggestion @suggestion.Kind" @key="SuggestionKey(suggestion)">
+                            <div class="pct">@((suggestion.Confidence * 100).ToString("0"))%</div>
+                            <div>
+                                <div class="title">@SuggestionTitle(suggestion)</div>
+                                <div class="why">@suggestion.Rationale</div>
+                                <div class="trigger">@TriggerText(suggestion)</div>
+                            </div>
+                            <button class="btn sm primary" @onclick="() => AcceptSuggestion(suggestion)" disabled="@_busy">@AcceptLabel(suggestion)</button>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="cs-grid">
+        @* ---------------------------------------------------------------- critical alerts *@
+        <div class="card">
+            <div class="card-head">
+                <h2>🚨 Critical alerts (PriorityQueue)</h2>
+                <small class="muted">handled before any queued telemetry</small>
+            </div>
+            @if (_snapshot.PendingAlerts.Count == 0 && _snapshot.RecentAlerts.Count == 0)
+            {
+                <div class="empty">No critical alerts yet. Use 💧 or ⚡ in the simulator, or E-STOP a device.</div>
+            }
+            <div class="alert-list">
+                @foreach (var pending in _snapshot.PendingAlerts)
+                {
+                    <div class="alert-row pending @pending.Severity" @key="pending.Id">
+                        <div><span class="chip @pending.Severity">@pending.Severity.ToString().ToUpperInvariant()</span></div>
+                        <div>
+                            <div class="title">@pending.Title</div>
+                            <div class="meta">@pending.DeviceName · @pending.MacAddress · waiting</div>
+                        </div>
+                        <div></div>
+                    </div>
+                }
+                @foreach (var processed in _snapshot.RecentAlerts)
+                {
+                    <div class="alert-row @processed.Severity @(processed.Acknowledged ? "acked" : "")" @key="processed.Id">
+                        <div>
+                            <span class="chip @processed.Severity">@processed.Severity.ToString().ToUpperInvariant()</span>
+                            <div class="meta" style="margin-top:.25rem">@processed.Source</div>
+                        </div>
+                        <div>
+                            <div class="title">@processed.Title</div>
+                            <div class="jump">@JumpText(processed)</div>
+                            <div class="meta">@processed.DeviceName · @processed.MacAddress · @Age(processed.RaisedAt)</div>
+                        </div>
+                        <div>
+                            @if (processed.Acknowledged)
+                            {
+                                <small class="muted">✓ dispatched</small>
+                            }
+                            else
+                            {
+                                <button class="btn sm" @onclick="() => Dispatch(processed)" disabled="@_busy">Dispatch</button>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+
+        @* ---------------------------------------------------------------- active faults *@
+        <div class="card">
+            <div class="card-head">
+                <h2>🧯 Active faults (HashSet)</h2>
+                <small class="muted">@_snapshot.DuplicatesSuppressed duplicate alert(s) suppressed</small>
+            </div>
+            @if (_snapshot.Faults.Count == 0)
+            {
+                <div class="empty">No active faults.</div>
+            }
+            @foreach (var fault in _snapshot.Faults)
+            {
+                <div class="fault-row" @key="fault.MacAddress">
+                    <div>
+                        <div><span class="chip fault">FAULT</span> <strong>@fault.Name</strong> <small class="mono muted">@fault.MacAddress</small></div>
+                        <div class="reason">@fault.Reason · @Age(fault.Since)</div>
+                    </div>
+                    <button class="btn sm" @onclick="() => ClearFault(fault)" disabled="@_busy">Clear</button>
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="cs-grid">
+        @* ---------------------------------------------------------------- devices *@
+        <div class="card">
+            <div class="card-head">
+                <h2>Operational devices <small class="muted">(@VisibleDevices.Count of @_snapshot.Devices.Count)</small></h2>
+                <div class="pulse-filters">
+                    @foreach (var option in Filters)
+                    {
+                        <button class="btn sm @(_filter == option ? "on" : "")" @onclick="() => _filter = option">@option</button>
+                    }
+                    <input placeholder="Search name / MAC / zone / kind" @bind="_search" @bind:event="oninput" @bind:after="OnSearchChanged" style="width:220px;padding:.3rem .6rem" />
+                </div>
+            </div>
+
+            <div class="bulk-bar">
+                <span class="label">Bulk override</span>
+                <button class="btn sm" @onclick="() => Bulk(DeviceKind.IrrigationValve, CommandKind.TurnOff)" disabled="@_busy">⛔ Shut down all valves</button>
+                <button class="btn sm" @onclick="() => Bulk(DeviceKind.WaterPump, CommandKind.TurnOff)" disabled="@_busy">Turn off all pumps</button>
+                <button class="btn sm" @onclick="() => Bulk(DeviceKind.GrowLight, CommandKind.TurnOn)" disabled="@_busy">Grow lights on</button>
+            </div>
+
+            @if (VisibleDevices.Count == 0)
+            {
+                <div class="empty">No devices match this filter.</div>
+            }
+            else
+            {
+                <div class="table-wrap">
+                    <table class="device-table">
+                        <thead>
+                            <tr><th>Device</th><th>Kind</th><th>State</th><th>Last command</th><th>Override</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var device in VisibleDevices)
+                            {
+                                var isSuggested = _suggestedMacs.Contains(device.MacAddress);
+                                <tr @key="device.MacAddress" class="@RowClass(device, isSuggested)">
+                                    <td>
+                                        <div class="name">
+                                            @if (isSuggested)
+                                            {
+                                                <span class="star" title="Suggested by the predictive engine">★</span>
+                                            }
+                                            @device.Name
+                                        </div>
+                                        <div class="mono muted">@device.MacAddress</div>
+                                        <div class="loc">@device.Location</div>
+                                    </td>
+                                    <td><span class="chip">@device.Kind</span><div class="loc">@device.Category</div></td>
+                                    <td>
+                                        <span class="chip st-@device.CurrentState">@device.CurrentState</span>
+                                        @if (device.InAlertState)
+                                        {
+                                            <span class="chip fault">FAULT</span>
+                                        }
+                                    </td>
+                                    <td><small class="muted">@LastCommandText(device)</small></td>
+                                    <td>
+                                        <div class="row-actions">
+                                            <button class="btn sm" @onclick="() => Issue(device, CommandKind.TurnOn)" disabled="@_busy">On</button>
+                                            <button class="btn sm" @onclick="() => Issue(device, CommandKind.TurnOff)" disabled="@_busy">Off</button>
+                                            <button class="btn sm" @onclick="() => Issue(device, CommandKind.Trigger)" disabled="@_busy">Trigger</button>
+                                            <button class="btn sm" @onclick="() => Issue(device, CommandKind.Reset)" disabled="@_busy">Reset</button>
+                                            <button class="btn sm danger-solid" @onclick="() => EmergencyStop(device)" disabled="@_busy">E-STOP</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+
+        @* ---------------------------------------------------------------- recent history *@
+        <div class="card">
+            <div class="card-head">
+                <h2>Recent history</h2>
+                <small class="muted">SortedDictionary · newest first</small>
+            </div>
+            @if (_snapshot.RecentHistory.Count == 0)
+            {
+                <div class="empty">No commands yet. Every override is recorded here and pushed onto the undo stack.</div>
+            }
+            <div class="history">
+                @foreach (var record in _snapshot.RecentHistory.Take(30))
+                {
+                    <div class="history-row @(record.Undone ? "undone" : "")" @key="record.Id">
+                        <div class="ts">@record.Timestamp.ToLocalTime().ToString("HH:mm:ss")</div>
+                        <div>
+                            <div class="what"><strong>@record.Command</strong> · @record.DeviceName</div>
+                            <div class="meta">@HistoryMeta(record)</div>
+                            @if (!string.IsNullOrWhiteSpace(record.Reason))
+                            {
+                                <div class="reason">@record.Reason</div>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    @* ---------------------------------------------------------------- sensor timeline *@
+    <div class="card" style="margin-top:1rem">
+        <div class="card-head">
+            <h2>📈 Sensor timeline (SortedDictionary)</h2>
+            <select @bind="_timelineMac" @bind:after="LoadTimeline" style="width:auto;min-width:260px">
+                <option value="">Choose a streamed sensor…</option>
+                @foreach (var item in _timelineSensors)
+                {
+                    <option value="@item.MacAddress">@TimelineOption(item)</option>
+                }
+            </select>
+        </div>
+        @if (string.IsNullOrEmpty(_timelineMac))
+        {
+            <div class="empty">Send readings with the simulator, then choose a sensor to plot its processed values in timestamp order.</div>
+        }
+        else if (_timelineValues.Count < 2)
+        {
+            <div class="empty">At least two processed readings are needed for this sensor.</div>
+        }
+        else
+        {
+            <div class="timeline-graph"><Sparkline Values="_timelineValues" Stroke="#2dd4bf" Thick="true" /></div>
+            <div class="timeline-stats">
+                <span>points <b>@_timelineValues.Count</b></span>
+                <span>min <b>@(_timelineValues.Min().ToString("0.#"))</b></span>
+                <span>max <b>@(_timelineValues.Max().ToString("0.#"))</b></span>
+                <span>latest <b>@(_timelineValues[_timelineValues.Count - 1].ToString("0.#"))</b></span>
+                <span>critical points <b>@CriticalPointCount</b></span>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private static readonly string[] Filters = { "All", "In alert", "Suggested", "OK" };
+
+    private CommandStreamSnapshot? _snapshot;
+    private string? _error;
+    private bool _paused;
+    private bool _busy;
+    private string _filter = "All";
+    private string _search = "";
+    private HashSet<string> _suggestedMacs = new(StringComparer.OrdinalIgnoreCase);
+
+    // device simulator
+    private List<SensorProfile> _sensors = new();
+    private string _simMac = "";
+    private double _simValue = 48;
+    private StreamIngestResult? _lastStream;
+    private readonly Random _rng = new();
+
+    // timeline
+    private List<TimelineSensor> _timelineSensors = new();
+    private string _timelineMac = "";
+    private List<TimelinePoint> _timeline = new();
+    private List<double> _timelineValues = new();
+
+    private readonly CancellationTokenSource _cts = new();
+    private CancellationTokenSource? _searchCts;
+    private int _tick;
+
+    private List<SmartDevice> VisibleDevices => (_snapshot?.Devices ?? new List<SmartDevice>())
+        .Where(d => _filter switch
+        {
+            "In alert" => d.InAlertState,
+            "Suggested" => _suggestedMacs.Contains(d.MacAddress),
+            "OK" => !d.InAlertState,
+            _ => true
+        })
+        .Where(d => string.IsNullOrWhiteSpace(_search)
+                    || d.Name.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                    || d.MacAddress.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                    || d.Location.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                    || d.Category.Contains(_search, StringComparison.OrdinalIgnoreCase)
+                    || d.Kind.ToString().Contains(_search, StringComparison.OrdinalIgnoreCase))
+        .OrderByDescending(d => _suggestedMacs.Contains(d.MacAddress))
+        .ThenByDescending(d => d.InAlertState)
+        .ThenBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    private string UndoButtonText =>
+        string.IsNullOrEmpty(_snapshot?.NextUndoLabel) ? "↶ Undo" : $"↶ Undo: {_snapshot.NextUndoLabel}";
+
+    private int CriticalPointCount => _timeline.Count(p => p.Critical);
+
+    private SensorProfile? SelectedSensor => _sensors.FirstOrDefault(s => s.MacAddress == _simMac);
+
+    // ------------------------------------------------------------------ lifecycle
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSensorsAsync();
+        _ = PollAsync();
+    }
+
+    /// <summary>Loads the simulator's sensor list. Retried by every poll until it succeeds, so the page recovers if the API started late.</summary>
+    private async Task LoadSensorsAsync()
+    {
+        try
+        {
+            var page = await Api.GetSensorsAsync(pageSize: 500, ct: _cts.Token);
+            _sensors = (page?.Items ?? new List<SensorProfile>())
+                .Where(s => s.Payload != PayloadKind.Bool)        // booleans never breach a threshold
+                .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (_sensors.Count > 0 && SelectedSensor is null)
+            {
+                _simMac = _sensors[0].MacAddress;
+                OnSimSensorChanged();
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            _error = $"Could not load sensors: {ex.Message}";
+        }
+    }
+
+    private async Task PollAsync()
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            do
+            {
+                if (!_paused) await RefreshAsync();
+            } while (await timer.WaitForNextTickAsync(_cts.Token));
+        }
+        catch (OperationCanceledException)
+        {
+            // page was closed
+        }
+        catch (ObjectDisposedException)
+        {
+            // page was closed
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            _snapshot = await Api.GetCommandStreamAsync(50, _cts.Token);
+            if (_sensors.Count == 0) await LoadSensorsAsync();
+            _suggestedMacs = new HashSet<string>(
+                (_snapshot?.Suggestions ?? new List<SuggestedAction>()).Select(s => s.MacAddress),
+                StringComparer.OrdinalIgnoreCase);
+
+            if (_tick++ % 3 == 0)
+                _timelineSensors = await Api.GetTimelineSensorsAsync(_cts.Token) ?? new List<TimelineSensor>();
+            if (!string.IsNullOrEmpty(_timelineMac))
+                await LoadTimeline();
+
+            if (_sensors.Count > 0) _error = null;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _error = $"API unreachable: {ex.Message}"; }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void TogglePause() => _paused = !_paused;
+
+    // ------------------------------------------------------------------ timeline
+    private async Task LoadTimeline()
+    {
+        if (string.IsNullOrEmpty(_timelineMac))
+        {
+            _timeline = new List<TimelinePoint>();
+            _timelineValues = new List<double>();
+            return;
+        }
+
+        try
+        {
+            _timeline = await Api.GetTimelineAsync(_timelineMac, 120, _cts.Token) ?? new List<TimelinePoint>();
+            _timelineValues = _timeline.Select(p => p.Value).ToList();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _error = $"Timeline unavailable: {ex.Message}"; }
+    }
+
+    // ------------------------------------------------------------------ search logging (feeds the predictive engine)
+    private void OnSearchChanged()
+    {
+        _searchCts?.Cancel();
+        _searchCts?.Dispose();
+        _searchCts = null;
+
+        var term = _search.Trim();
+        if (term.Length < 2) return;
+
+        _searchCts = new CancellationTokenSource();
+        _ = LogSearchLaterAsync(term, _searchCts.Token);
+    }
+
+    private async Task LogSearchLaterAsync(string term, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(800, ct);              // debounce: only the term the operator settles on is logged
+            await Api.LogSearchAsync(term, ct);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception)
+        {
+            // Logging a search must never disturb the dashboard.
+        }
+    }
+
+    // ------------------------------------------------------------------ device simulator
+    private void OnSimSensorChanged()
+    {
+        var sensor = SelectedSensor;
+        if (sensor is null) return;
+        _simValue = sensor.Category == SensorCategory.PowerConsumption ? 1220 : 48;
+    }
+
+    private Task SendReading()
+    {
+        var sensor = SelectedSensor;
+        return sensor is null ? Task.CompletedTask : SendAsync(sensor, _simValue);
+    }
+
+    private Task SendCriticalMoisture()
+    {
+        var sensor = SelectedSensor is { Category: SensorCategory.Environmental } selected
+            ? selected
+            : _sensors.FirstOrDefault(s => s.Category == SensorCategory.Environmental);
+        return sensor is null ? Task.CompletedTask : SendAsync(sensor, 12);
+    }
+
+    private Task SendPowerSpike()
+    {
+        var sensor = SelectedSensor is { Category: SensorCategory.PowerConsumption } selected
+            ? selected
+            : _sensors.FirstOrDefault(s => s.Category == SensorCategory.PowerConsumption);
+        return sensor is null ? Task.CompletedTask : SendAsync(sensor, 2600);
+    }
+
+    private async Task SendAsync(SensorProfile sensor, double value)
+    {
+        _busy = true;
+        try
+        {
+            var reading = new TelemetryIngestRequest
+            {
+                MacAddress = sensor.MacAddress,
+                Kind = sensor.Payload,
+                Value = sensor.Payload == PayloadKind.Int ? Math.Round(value) : value
+            };
+            var result = await Api.StreamTelemetryAsync(reading, _cts.Token);
+            if (result.Success && result.Value is not null)
+            {
+                _lastStream = result.Value;
+                if (result.Value.Route == StreamRoute.Priority) Toast.Error("Critical reading → PriorityQueue", result.Value.Message);
+                else if (result.Value.Route == StreamRoute.SuppressedDuplicate) Toast.Info("Duplicate alert suppressed", result.Value.Message);
+                else Toast.Success("Reading queued (FIFO)", result.Value.Message);
+            }
+            else
+            {
+                Toast.Error("Reading rejected", result.Error);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return;                                  // page closed while the request was in flight
+        }
+        catch (Exception ex)
+        {
+            Toast.Error("API unreachable", ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+        await RefreshAsync();
+    }
+
+    private async Task SendBurst()
+    {
+        // Keep the burst away from the sensors the 💧/⚡ buttons target and from faulted sensors:
+        // a normal reading for those would clear their fault mid-demo.
+        var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { _simMac };
+        if (_sensors.FirstOrDefault(s => s.Category == SensorCategory.Environmental) is { } firstSoil) excluded.Add(firstSoil.MacAddress);
+        if (_sensors.FirstOrDefault(s => s.Category == SensorCategory.PowerConsumption) is { } firstMeter) excluded.Add(firstMeter.MacAddress);
+        foreach (var fault in _snapshot?.Faults ?? new List<FaultEntry>()) excluded.Add(fault.MacAddress);
+
+        var targets = _sensors.Where(s => !excluded.Contains(s.MacAddress)).ToList();
+        if (targets.Count == 0) return;
+
+        const int count = 200;
+        _busy = true;
+        try
+        {
+            var batch = new List<TelemetryIngestRequest>(count);
+            for (var i = 0; i < count; i++)
+            {
+                var sensor = targets[_rng.Next(targets.Count)];
+                // Values inside the Part 1 baseline, so the burst is normal traffic for both Part 1 and Part 2.
+                double value = sensor.Category == SensorCategory.PowerConsumption
+                    ? 1200 + _rng.Next(60)
+                    : Math.Round(47.5 + _rng.NextDouble() * 3.5, 1);
+                batch.Add(new TelemetryIngestRequest { MacAddress = sensor.MacAddress, Kind = sensor.Payload, Value = value });
+            }
+
+            var result = await Api.StreamTelemetryBatchAsync(batch, _cts.Token);
+            if (result.Success && result.Value is not null)
+                Toast.Success($"Burst of {count} packets queued",
+                    $"FIFO depth is now {result.Value.TelemetryQueueDepth}. Send a critical reading now to watch it jump the queue.");
+            else
+                Toast.Error("Burst rejected", result.Error);
+        }
+        catch (OperationCanceledException)
+        {
+            return;                                  // page closed while the request was in flight
+        }
+        catch (Exception ex)
+        {
+            Toast.Error("API unreachable", ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+        await RefreshAsync();
+    }
+
+    // ------------------------------------------------------------------ commands
+    private async Task Issue(SmartDevice device, CommandKind command, int priority = 5, string? reason = null)
+    {
+        _busy = true;
+        try
+        {
+            var result = await Api.IssueCommandAsync(new IssueCommandRequest
+            {
+                MacAddress = device.MacAddress,
+                Command = command,
+                Priority = priority,
+                Reason = Limit(reason ?? $"{command} from dashboard", 160)
+            }, _cts.Token);
+
+            if (result.Success) Toast.Success($"{command} queued", device.Name);
+            else Toast.Error("Command rejected", result.Error);
+        }
+        catch (OperationCanceledException)
+        {
+            return;                                  // page closed while the request was in flight
+        }
+        catch (Exception ex)
+        {
+            Toast.Error("API unreachable", ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+        await RefreshAsync();
+    }
+
+    private async Task Bulk(DeviceKind kind, CommandKind command)
+    {
+        _busy = true;
+        try
+        {
+            var result = await Api.IssueBulkCommandAsync(new BulkCommandRequest
+            {
+                Kind = kind,
+                Command = command,
+                Reason = $"Bulk {command} from dashboard"
+            }, _cts.Token);
+
+            if (result.Success && result.Value is not null)
+                Toast.Success("Bulk override queued", $"{result.Value.Label} – one Undo reverts all of it.");
+            else
+                Toast.Error("Bulk override rejected", result.Error);
+        }
+        catch (OperationCanceledException)
+        {
+            return;                                  // page closed while the request was in flight
+        }
+        catch (Exception ex)
+        {
+            Toast.Error("API unreachable", ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+        await RefreshAsync();
+    }
+
+    private async Task EmergencyStop(SmartDevice device)
+    {
+        _busy = true;
+        try
+        {
+            // 1. The alert goes to the PriorityQueue (or is suppressed if the device is already faulted).
+            var alert = await Api.RaiseCriticalAlertAsync(new CriticalAlert
+            {
+                MacAddress = device.MacAddress,
+                DeviceName = device.Name,
+                Severity = Severity.Critical,
+                Source = AlertSource.Operator,
+                Title = "Emergency stop",
+                Detail = $"Operator E-STOP on {device.Name}",
+                ConditionKey = $"{device.MacAddress}|estop"
+            }, _cts.Token);
+
+            // 2. The stop itself is an override like any other, so it can be undone.
+            var command = await Api.IssueCommandAsync(new IssueCommandRequest
+            {
+                MacAddress = device.MacAddress,
+                Command = CommandKind.EmergencyStop,
+                Priority = 1,
+                Reason = "Emergency stop"
+            }, _cts.Token);
+
+            if (!command.Success) Toast.Error("E-STOP rejected", command.Error);
+            else if (alert is { DuplicateSuppressed: true }) Toast.Info("E-STOP sent – duplicate alert suppressed", $"{device.Name} is already in the active-fault HashSet.");
+            else Toast.Error("E-STOP", $"{device.Name} stopped; alert raised through the PriorityQueue.");
+        }
+        catch (OperationCanceledException)
+        {
+            return;                                  // page closed while the request was in flight
+        }
+        catch (Exception ex)
+        {
+            Toast.Error("API unreachable", ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+        await RefreshAsync();
+    }
+
+    private async Task UndoLast()
+    {
+        _busy = true;
+        try
+        {
+            var reverse = await Api.UndoLastCommandAsync(_cts.Token);
+            if (reverse is not null) Toast.Info("Undone", $"{reverse.Label} – {reverse.Records.Count} device(s) restored.");
+            else Toast.Error("Nothing to undo");
+        }
+        catch (OperationCanceledException)
+        {
+            return;                                  // page closed while the request was in flight
+        }
+        catch (Exception ex)
+        {
+            Toast.Error("API unreachable", ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+        }
+        await RefreshAsync();
+    }
+
+    // ------------------------------------------------------------------ alerts, faults, suggestions
+    private async Task Dispatch(CriticalAlert alert)
+    {
+        try
+        {
+            if (await Api.AcknowledgeAlertAsync(alert.Id, _cts.Token)) Toast.Info("Alert dispatched", alert.Title);
+            else Toast.Error("Could not dispatch the alert");
+        }
+        catch (OperationCanceledException)
+        {
+            return;                                  // page closed while the request was in flight
+        }
+        catch (Exception ex)
+        {
+            Toast.Error("API unreachable", ex.Message);
+        }
+        await RefreshAsync();
+    }
+
+    private async Task ClearFault(FaultEntry fault)
+    {
+        try
+        {
+            if (await Api.ClearFaultAsync(fault.MacAddress, _cts.Token)) Toast.Info("Fault cleared", fault.Name);
+            else Toast.Error("Could not clear the fault");
+        }
+        catch (OperationCanceledException)
+        {
+            return;                                  // page closed while the request was in flight
+        }
+        catch (Exception ex)
+        {
+            Toast.Error("API unreachable", ex.Message);
+        }
+        await RefreshAsync();
+    }
+
+    private async Task AcceptSuggestion(SuggestedAction suggestion)
+    {
+        var device = _snapshot?.Devices.FirstOrDefault(d => d.MacAddress.Equals(suggestion.MacAddress, StringComparison.OrdinalIgnoreCase));
+
+        if (suggestion.Kind == SuggestionKind.IssueCommand && suggestion.Command is { } command && device is not null)
+        {
+            await Issue(device, command, 3, $"Accepted suggestion: {suggestion.Trigger}");
+            return;
+        }
+
+        if (device is not null)
+        {
+            // "Inspect" – narrow the table to the device and record the look-up like a search.
+            _filter = "All";
+            _search = device.Name;
+            OnSearchChanged();
+            Toast.Info("Showing suggested device", device.Name);
+            return;
+        }
+
+        // An insight about a sensor – plot it.
+        _timelineMac = suggestion.MacAddress;
+        await LoadTimeline();
+        Toast.Info("Plotting sensor on the timeline", suggestion.DeviceName);
+    }
+
+    // ------------------------------------------------------------------ display helpers
+    private static string RowClass(SmartDevice device, bool suggested) =>
+        device.InAlertState ? "row-alert" : suggested ? "row-suggested" : "";
+
+    private static string SuggestionKey(SuggestedAction s) => $"{s.Kind}|{s.MacAddress}|{s.Command}";
+
+    private static string SuggestionTitle(SuggestedAction s) => s.Kind switch
+    {
+        SuggestionKind.IssueCommand => $"{s.Command} · {s.DeviceName}",
+        SuggestionKind.InspectDevice => $"Check {s.DeviceName}",
+        _ => s.DeviceName
+    };
+
+    private static string AcceptLabel(SuggestedAction s) => s.Kind switch
+    {
+        SuggestionKind.IssueCommand => "Run",
+        SuggestionKind.InspectDevice => "Show",
+        _ => "View"
+    };
+
+    private static string TriggerText(SuggestedAction s) =>
+        s.Support > 0 ? $"{s.Kind} · {s.Trigger} · seen {s.Support}×" : $"{s.Kind} · {s.Trigger}";
+
+    private static string JumpText(CriticalAlert a) =>
+        $"⚡ processed {(a.LatencyMs is { } ms ? $"{ms:0} ms" : "–")} after arrival, ahead of {a.QueuedAheadAtProcess} queued packet(s)";
+
+    private static string HistoryMeta(CommandRecord r) =>
+        $"{r.PreviousState} → {r.NewState} · priority {r.Priority} · {r.IssuedBy}{(r.Undone ? " · undone" : "")}";
+
+    private static string LastCommandText(SmartDevice d) => d.LastCommandAt is { } at ? Age(at) : "–";
+
+    private static string SensorOption(SensorProfile s) => $"{s.Name} · {s.MacAddress} ({s.Unit})";
+
+    private static string TimelineOption(TimelineSensor s) => $"{s.Name} · {s.MacAddress} ({s.Points} pts)";
+
+    private static string Limit(string text, int max) => text.Length <= max ? text : text[..max];
+
+    private static string Age(DateTimeOffset t)
+    {
+        var s = Math.Max(0, (DateTimeOffset.UtcNow - t).TotalSeconds);
+        return s < 60 ? $"{s:0}s ago" : s < 3600 ? $"{s / 60:0}m ago" : $"{s / 3600:0.#}h ago";
+    }
+
+    public void Dispose()
+    {
+        // Cancel only: in-flight tasks may still read _cts.Token, which throws once the source is disposed.
+        _cts.Cancel();
+        _searchCts?.Cancel();
+    }
+}
