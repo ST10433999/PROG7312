@@ -32,13 +32,13 @@ else if (_error is not null)
         <p>Register ESP32 nodes, push typed telemetry through <code>TelemetryPacket&lt;T&gt;</code>, attach configs and logs, and watch the live Node Pulse Board flag spikes and disconnects.</p>
         <span class="cta">Open ingestion console →</span>
     </a>
-    <div class="pillar disabled" aria-disabled="true" title="Disabled – implemented in Part 2">
-        <span class="badge">Part 2 · Disabled</span>
+    <a class="pillar enabled" href="command-stream">
+        <span class="badge">Part 2 · Active</span>
         <div class="icon">⚡</div>
         <h2>Real-Time Command Stream &amp; History</h2>
-        <p>Bidirectional command channel to actuators with a replayable event history. Coming in Part 2.</p>
-        <span class="cta">Locked</span>
-    </div>
+        <p>Dashboard over a <code>Queue&lt;T&gt;</code> ingestion stream, <code>PriorityQueue</code> for critical alerts, <code>Stack&lt;T&gt;</code> command undo, O(1) <code>Dictionary</code> device lookup and a <code>SortedDictionary</code> history timeline. Includes a predictive suggestion engine.</p>
+        <span class="cta">Open command stream →</span>
+    </a>
     <div class="pillar disabled" aria-disabled="true" title="Disabled – implemented in the final PoE">
         <span class="badge">Final PoE · Disabled</span>
         <div class="icon">🕸</div>
