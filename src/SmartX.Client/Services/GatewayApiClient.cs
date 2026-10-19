@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using SmartX.Shared.Commands;
 using SmartX.Shared.Models;
 using SmartX.Shared.Topology;
 
@@ -108,12 +109,89 @@ public sealed class GatewayApiClient(HttpClient http)
         var resp = await http.PostAsJsonAsync("api/topology/validate-placement", req, Json, ct);
         return await resp.Content.ReadFromJsonAsync<TopologyValidationResult>(Json, ct);
     }
+
+    // ---------------------------------------------------------------- PART 2 — Command Stream
+    public Task<CommandStreamSnapshot?> GetCommandStreamAsync(int take = 50, CancellationToken ct = default) =>
+        http.GetFromJsonAsync<CommandStreamSnapshot>($"api/commands/stream?take={take}", Json, ct);
+
+    public async Task<ApiResult<CommandEnvelope>> IssueCommandAsync(IssueCommandRequest req, CancellationToken ct = default)
+    {
+        var resp = await http.PostAsJsonAsync("api/commands", req, Json, ct);
+        return await ApiResult<CommandEnvelope>.FromAsync(resp, ct);
+    }
+
+    public async Task<ApiResult<CommandEnvelope>> IssueBulkCommandAsync(BulkCommandRequest req, CancellationToken ct = default)
+    {
+        var resp = await http.PostAsJsonAsync("api/commands/bulk", req, Json, ct);
+        return await ApiResult<CommandEnvelope>.FromAsync(resp, ct);
+    }
+
+    public async Task<CommandBatch?> UndoLastCommandAsync(CancellationToken ct = default)
+    {
+        var resp = await http.PostAsync("api/commands/undo", null, ct);
+        return resp.IsSuccessStatusCode ? await resp.Content.ReadFromJsonAsync<CommandBatch>(Json, ct) : null;
+    }
+
+    public Task<List<CommandRecord>?> GetCommandHistoryAsync(string? mac = null, int take = 100, CancellationToken ct = default)
+    {
+        var q = $"api/commands/history?take={take}";
+        if (!string.IsNullOrWhiteSpace(mac)) q += $"&mac={Uri.EscapeDataString(mac)}";
+        return http.GetFromJsonAsync<List<CommandRecord>>(q, Json, ct);
+    }
+
+    public Task<List<SmartDevice>?> SearchDevicesAsync(string? query = null, bool? inAlert = null, CancellationToken ct = default)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(query)) parts.Add($"q={Uri.EscapeDataString(query)}");
+        if (inAlert is not null) parts.Add($"inAlert={(inAlert.Value ? "true" : "false")}");
+        var url = parts.Count == 0 ? "api/devices" : $"api/devices?{string.Join("&", parts)}";
+        return http.GetFromJsonAsync<List<SmartDevice>>(url, Json, ct);
+    }
+
+    /// <summary>Reports an operator search so the predictive engine can learn from it.</summary>
+    public async Task LogSearchAsync(string term, CancellationToken ct = default) =>
+        await http.PostAsJsonAsync("api/suggestions/search", new SearchLogRequest { Term = term }, Json, ct);
+
+    public async Task<RaiseAlertResult?> RaiseCriticalAlertAsync(CriticalAlert alert, CancellationToken ct = default)
+    {
+        var resp = await http.PostAsJsonAsync("api/alerts/critical", alert, Json, ct);
+        return resp.IsSuccessStatusCode ? await resp.Content.ReadFromJsonAsync<RaiseAlertResult>(Json, ct) : null;
+    }
+
+    public async Task<bool> AcknowledgeAlertAsync(Guid id, CancellationToken ct = default) =>
+        (await http.PostAsync($"api/alerts/{id}/acknowledge", null, ct)).IsSuccessStatusCode;
+
+    public async Task<bool> ClearFaultAsync(string mac, CancellationToken ct = default) =>
+        (await http.PostAsync($"api/devices/{Uri.EscapeDataString(mac)}/clear-fault", null, ct)).IsSuccessStatusCode;
+
+    /// <summary>Publishes one reading exactly as an ESP32 would.</summary>
+    public async Task<ApiResult<StreamIngestResult>> StreamTelemetryAsync(TelemetryIngestRequest req, CancellationToken ct = default)
+    {
+        var resp = await http.PostAsJsonAsync("api/stream/telemetry", req, Json, ct);
+        return await ApiResult<StreamIngestResult>.FromAsync(resp, ct);
+    }
+
+    public async Task<ApiResult<StreamBatchResult>> StreamTelemetryBatchAsync(List<TelemetryIngestRequest> batch, CancellationToken ct = default)
+    {
+        var resp = await http.PostAsJsonAsync("api/stream/telemetry/batch", batch, Json, ct);
+        return await ApiResult<StreamBatchResult>.FromAsync(resp, ct);
+    }
+
+    public Task<List<TimelinePoint>?> GetTimelineAsync(string mac, int take = 120, CancellationToken ct = default) =>
+        http.GetFromJsonAsync<List<TimelinePoint>>($"api/stream/timeline?mac={Uri.EscapeDataString(mac)}&take={take}", Json, ct);
+
+    public Task<List<TimelineSensor>?> GetTimelineSensorsAsync(CancellationToken ct = default) =>
+        http.GetFromJsonAsync<List<TimelineSensor>>("api/stream/timeline/sensors", Json, ct);
+
+    public Task<List<SuggestedAction>?> GetSuggestionsAsync(int take = 5, CancellationToken ct = default) =>
+        http.GetFromJsonAsync<List<SuggestedAction>>($"api/suggestions?take={take}", Json, ct);
 }
 
 // ---------------------------------------------------------------------------
 // Client-side DTOs for anonymous API payloads
 // ---------------------------------------------------------------------------
-public sealed class HealthInfo { public string Status { get; set; } = ""; public string Service { get; set; } = ""; public string Runtime { get; set; } = ""; public int Sensors { get; set; } public long PacketsIngested { get; set; } public DateTimeOffset Utc { get; set; } }
+public sealed class HealthInfo { public string Status { get; set; } = ""; public string Service { get; set; } = ""; public string Runtime { get; set; } = ""; public int Sensors { get; set; } public long PacketsIngested { get; set; } public int Devices { get; set; } public int TelemetryQueueDepth { get; set; } public int PendingCriticalAlerts { get; set; } public int ActiveFaults { get; set; } public DateTimeOffset Utc { get; set; } }
+public sealed class RaiseAlertResult { public bool Accepted { get; set; } public bool DuplicateSuppressed { get; set; } public Guid? AlertId { get; set; } public int PendingCriticalAlerts { get; set; } }
 public sealed class PagedResult<T> { public int Total { get; set; } public int Page { get; set; } public int PageSize { get; set; } public List<T> Items { get; set; } = new(); }
 public sealed class UploadResult { public List<AttachmentInfo> Saved { get; set; } = new(); public List<RejectedFile> Rejected { get; set; } = new(); }
 public sealed class RejectedFile { public string FileName { get; set; } = ""; public string Reason { get; set; } = ""; }
