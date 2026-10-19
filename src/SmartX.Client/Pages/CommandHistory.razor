@@ -1,0 +1,98 @@
+@page "/command-stream/history"
+@inject GatewayApiClient Api
+@implements IDisposable
+
+<PageTitle>Command history · Smart-X</PageTitle>
+
+<div class="card-head">
+    <div>
+        <h1>Command history</h1>
+        <small>Every executed override, read from <code>SortedDictionary&lt;StreamKey, CommandRecord&gt;</code> – already in timestamp order, so no sort is needed. Filter by MAC to follow one device.</small>
+    </div>
+    <div class="actions" style="margin:0">
+        <a class="btn sm" href="command-stream">← Back to live stream</a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-head">
+        <div class="pulse-filters">
+            <input placeholder="Filter by device MAC (optional)" @bind="_mac" @bind:event="oninput" style="width:260px;padding:.3rem .6rem" />
+            <button class="btn sm" @onclick="Load" disabled="@_loading">@(_loading ? "Loading…" : "Refresh")</button>
+        </div>
+        <small class="muted">@_records.Count record(s)</small>
+    </div>
+
+    @if (_error is not null)
+    {
+        <div class="alert error">@_error</div>
+    }
+
+    @if (_records.Count == 0)
+    {
+        <div class="empty">No commands recorded yet. Issue an override on the Command Stream page.</div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table class="history-table">
+                <thead>
+                    <tr><th>Time</th><th>Device</th><th>Command</th><th>Transition</th><th>Priority</th><th>Issued by</th><th>Reason</th><th></th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var record in _records)
+                    {
+                        <tr class="@(record.Undone ? "undone" : "")" @key="record.Id">
+                            <td class="mono">@record.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td>@record.DeviceName<div class="mono muted">@record.MacAddress</div></td>
+                            <td><span class="chip">@record.Command</span></td>
+                            <td><span class="chip st-@record.PreviousState">@record.PreviousState</span> → <span class="chip st-@record.NewState">@record.NewState</span></td>
+                            <td>@record.Priority</td>
+                            <td>@record.IssuedBy</td>
+                            <td><small class="muted">@record.Reason</small></td>
+                            <td>
+                                @if (record.Undone)
+                                {
+                                    <span class="chip Warn">UNDONE</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@code {
+    private List<CommandRecord> _records = new();
+    private string _mac = "";
+    private string? _error;
+    private bool _loading;
+    private readonly CancellationTokenSource _cts = new();
+
+    protected override Task OnInitializedAsync() => Load();
+
+    private async Task Load()
+    {
+        _loading = true;
+        try
+        {
+            var mac = string.IsNullOrWhiteSpace(_mac) ? null : _mac.Trim();
+            _records = await Api.GetCommandHistoryAsync(mac, 500, _cts.Token) ?? new List<CommandRecord>();
+            _error = null;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            _error = $"API unreachable: {ex.Message}";
+            _records = new List<CommandRecord>();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    public void Dispose() => _cts.Cancel();     // cancel only – a pending Load may still read the token
+}
