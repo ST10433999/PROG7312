@@ -1,0 +1,259 @@
+@page "/topology"
+@page "/topology/{Mac}"
+@inject GatewayApiClient Api
+@inject ToastService Toast
+@inject UiState Ui
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>Network Topology &amp; Mesh Routing · Smart-X</PageTitle>
+
+<div class="card-head">
+    <div>
+        <h1>Network Topology &amp; Mesh Routing</h1>
+        <small>
+            The ESP32 mesh as a <b>graph</b> (adjacency list). <b>BFS</b> finds who each gateway or subnet can reach. <b>DFS</b> finds islands and
+            single points of failure. <b>Prim's</b> (or <b>Kruskal's</b>) <b>minimum spanning tree</b> picks the most power-efficient uplink for every node,
+            and is rebuilt the moment a node fails. History comes from per-sensor <b>AVL trees</b>.
+        </small>
+    </div>
+    <div class="actions" style="margin:0">
+        <span><span class="live-dot @(_paused ? "paused" : "")"></span><small>@(_paused ? "Paused" : "Live · every 3 s")</small></span>
+        <button class="btn sm" @onclick="TogglePause">@(_paused ? "▶ Resume" : "⏸ Pause")</button>
+    </div>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert error">@_error</div>
+}
+
+@if (_snapshot is null && _error is null)
+{
+    <div class="empty"><span class="spinner" style="display:inline-block"></span> Building the mesh graph…</div>
+}
+
+@if (_snapshot is not null)
+{
+    var stats = _snapshot.Stats;
+    <div class="stats">
+        <div class="stat healthy"><div class="label">Online</div><div class="value">@stats.Online</div><div class="sub">of @stats.Vertices nodes · @stats.ActiveLinks/@stats.Links links up</div></div>
+        <div class="stat silent"><div class="label">Down</div><div class="value">@(stats.Failed + stats.Silent)</div><div class="sub">@stats.Failed failed · @stats.Silent silent</div></div>
+        <div class="stat drift"><div class="label">Isolated</div><div class="value">@stats.Isolated</div><div class="sub">DFS: @stats.Components component(s)</div></div>
+        <div class="stat"><div class="label">MST energy</div><div class="value">@((stats.TreeEnergyMicroJoules / 1000).ToString("0.0")) mJ</div><div class="sub">@SavingText(stats) vs all links</div></div>
+        <div class="stat"><div class="label">Hops to gateway</div><div class="value">@stats.AverageHops.ToString("0.0")</div><div class="sub">average · max @stats.MaxHops</div></div>
+        <div class="stat"><div class="label">Critical relays</div><div class="value">@stats.CriticalNodes</div><div class="sub">articulation points (DFS)</div></div>
+    </div>
+
+    <div class="mesh-toolbar">
+        <label>Subnet
+            <select @bind="_subnet" @bind:after="SaveUi">
+                <option value="">All subnets</option>
+                @foreach (var s in _snapshot.Subnets)
+                {
+                    <option value="@s">@s</option>
+                }
+            </select>
+        </label>
+        <label>MST algorithm
+            <select @bind="_algorithm" @bind:after="AlgorithmChanged">
+                <option value="@SpanningTreeAlgorithm.Prim">Prim (min-heap)</option>
+                <option value="@SpanningTreeAlgorithm.Kruskal">Kruskal (union–find)</option>
+            </select>
+        </label>
+        <label class="check"><input type="checkbox" @bind="_showAllLinks" @bind:after="SaveUi" /> show every radio link</label>
+        <span class="muted">built in @stats.ComputeMicroseconds.ToString("N0") µs · @stats.Operations.ToString("N0") ops</span>
+        <span class="spacer"></span>
+        <button class="btn sm danger" @onclick="FailBusiest" disabled="@_busy" title="Takes the relay carrying the most traffic offline">⚡ Fail busiest relay</button>
+        <button class="btn sm" @onclick="RestoreAll" disabled="@(_busy || stats.Failed == 0)">♻ Restore all</button>
+    </div>
+
+    <div class="topology-grid">
+        <div class="card map-card">
+            <MeshMap Snapshot="_snapshot" SelectedMac="@_selectedMac" Subnet="@_subnet" ShowAllLinks="_showAllLinks"
+                     RoutePath="RouteMacs" PreviousPath="PreviousMacs" OnSelect="Select" />
+        </div>
+        <div class="side-stack">
+            <RoutePanel Nodes="_snapshot.Nodes" Route="_route" Busy="_busy" OnTrack="Select" OnFail="Fail" OnRestore="Restore" />
+            <HealingFeed Events="_snapshot.RecentHealing" OnSelect="Select" />
+        </div>
+    </div>
+
+    <div class="topology-grid lower">
+        <HistoryLog Mac="@HistoryMac" Name="@SelectedNode?.Name" />
+        <div class="side-stack">
+            <ReachabilityPanel Subnets="_snapshot.Subnets" Scope="@Ui.Topology.ReachabilityScope" ScopeChanged="s => Ui.Topology.ReachabilityScope = s"
+                               OnSelect="Select" Version="stats.Version" />
+            <StructuresPanel Algorithm="_algorithm" Version="stats.Version" Stats="stats" />
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string? Mac { get; set; }
+
+    private MeshSnapshot? _snapshot;
+    private RouteResult? _route;
+    private string? _selectedMac;
+    private string? _error;
+    private bool _paused;
+    private bool _busy;
+    private string _subnet = "";
+    private bool _showAllLinks = true;
+    private SpanningTreeAlgorithm _algorithm = SpanningTreeAlgorithm.Prim;
+    private long _routeVersion = -1;
+    private readonly CancellationTokenSource _cts = new();
+
+    private MeshNode? SelectedNode => _snapshot?.Nodes.FirstOrDefault(n => n.MacAddress.Equals(_selectedMac, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Only sensors have telemetry history.</summary>
+    private string? HistoryMac => SelectedNode is { Kind: MeshNodeKind.Sensor } n ? n.MacAddress : null;
+
+    private List<string>? RouteMacs => _route is { Reachable: true } r ? r.TreePath.Select(h => h.MacAddress).ToList() : null;
+
+    private List<string>? PreviousMacs
+    {
+        get
+        {
+            if (_route is not { PreviousPath.Count: > 1 } r || _snapshot is null) return null;
+            var byName = _snapshot.Nodes.GroupBy(n => n.Name).ToDictionary(g => g.Key, g => g.First().MacAddress);
+            return r.PreviousPath.Where(byName.ContainsKey).Select(n => byName[n]).ToList();
+        }
+    }
+
+    // ------------------------------------------------------------------ lifecycle
+    protected override async Task OnInitializedAsync()
+    {
+        var saved = Ui.Topology;
+        _subnet = saved.Subnet;
+        _algorithm = saved.Algorithm;
+        _showAllLinks = saved.ShowAllLinks;
+        _paused = saved.Paused;
+        _selectedMac = !string.IsNullOrWhiteSpace(Mac) ? Mac.Trim().ToUpperInvariant() : Ui.SelectedSensorMac;
+
+        await RefreshAsync();
+        if (_selectedMac is not null) await LoadRoute();
+        _ = PollAsync();
+    }
+
+    private async Task PollAsync()
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+            while (await timer.WaitForNextTickAsync(_cts.Token))
+                if (!_paused && !_busy) await RefreshAsync();
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            _snapshot = await Api.GetMeshAsync(_algorithm, _cts.Token);
+            _error = null;
+            // The route only needs refetching when the tree changed (a node failed, recovered or went silent).
+            if (_selectedMac is not null && _snapshot is not null && _snapshot.Stats.Version != _routeVersion)
+                await LoadRoute();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _error = $"API unreachable: {ex.Message}"; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadRoute()
+    {
+        if (_selectedMac is null) { _route = null; return; }
+        try
+        {
+            var r = await Api.GetRouteAsync(_selectedMac, _cts.Token);
+            _route = r.Success ? r.Value : null;
+            if (!r.Success) Toast.Error("Route unavailable", r.Error);
+            _routeVersion = _snapshot?.Stats.Version ?? -1;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Toast.Error("Route unavailable", ex.Message); }
+    }
+
+    // ------------------------------------------------------------------ interaction
+    private async Task Select(string mac)
+    {
+        _selectedMac = mac.ToUpperInvariant();
+        if (SelectedNode is { Kind: MeshNodeKind.Sensor })
+        {
+            Ui.SelectedSensorMac = _selectedMac;
+            Ui.NotifyChanged();
+        }
+        await LoadRoute();
+        Nav.NavigateTo($"topology/{Uri.EscapeDataString(_selectedMac)}", replace: true);
+    }
+
+    private async Task Fail(string mac) => await Act(() => Api.FailNodeAsync(mac, _cts.Token), "taken offline");
+    private async Task Restore(string mac) => await Act(() => Api.RestoreNodeAsync(mac, _cts.Token), "restored");
+    private async Task FailBusiest() => await Act(() => Api.FailBusiestAsync(_cts.Token), "taken offline", select: true);
+
+    private async Task Act(Func<Task<ApiResult<NodeStateChange>>> call, string verb, bool select = false)
+    {
+        _busy = true;
+        try
+        {
+            var r = await call();
+            if (!r.Success || r.Value is null) { Toast.Error("Action failed", r.Error); return; }
+            var h = r.Value.Healing;
+            Toast.Success($"{r.Value.Name} {verb}",
+                h is null ? "No change to routing." : $"Mesh healed: {h.Rerouted} node(s) re-routed, {h.NewlyIsolated.Count} isolated, {h.Reconnected.Count} reconnected.");
+            if (select && h?.Changes.FirstOrDefault() is { } first) await Select(first.MacAddress);   // show a re-routed node
+        }
+        catch (Exception ex) { Toast.Error("API unreachable", ex.Message); }
+        finally { _busy = false; }
+        await RefreshAsync();
+        await LoadRoute();
+    }
+
+    private async Task RestoreAll()
+    {
+        _busy = true;
+        try
+        {
+            var r = await Api.RestoreAllAsync(_cts.Token);
+            if (r.Success) Toast.Info("All nodes restored", r.Value?.Healing is { } h ? $"{h.Rerouted} node(s) moved back to their best uplink." : "");
+            else Toast.Error("Restore failed", r.Error);
+        }
+        catch (Exception ex) { Toast.Error("API unreachable", ex.Message); }
+        finally { _busy = false; }
+        await RefreshAsync();
+        await LoadRoute();
+    }
+
+    private async Task AlgorithmChanged()
+    {
+        SaveUi();
+        await RefreshAsync();
+    }
+
+    private void TogglePause()
+    {
+        _paused = !_paused;
+        SaveUi();
+    }
+
+    private void SaveUi()
+    {
+        var t = Ui.Topology;
+        t.Subnet = _subnet;
+        t.Algorithm = _algorithm;
+        t.ShowAllLinks = _showAllLinks;
+        t.Paused = _paused;
+    }
+
+    private static string SavingText(MeshStats s) =>
+        s.AllLinksEnergyMicroJoules <= 0 ? "–" : $"−{(1 - s.TreeEnergyMicroJoules / s.AllLinksEnergyMicroJoules) * 100:0}%";
+
+    public void Dispose()
+    {
+        SaveUi();
+        _cts.Cancel();
+    }
+}
