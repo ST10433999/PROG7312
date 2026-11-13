@@ -1,0 +1,254 @@
+@* Part 3 — historical log of the selected sensor, answered by an AVL-tree range query on the API. *@
+@using System.Globalization
+@inject UiState Ui
+
+<div class="card history-card">
+    <div class="card-head">
+        <h2>🕓 Historical log @if (!string.IsNullOrEmpty(Name)) { <small class="muted">· @Name</small> }</h2>
+        <small class="muted">AVL tree range query · O(log n + k)</small>
+    </div>
+
+    @if (string.IsNullOrEmpty(Mac))
+    {
+        <div class="empty">Select a sensor on the map (or track one by MAC) to read its telemetry history.</div>
+    }
+    else
+    {
+        <div class="history-controls">
+            <div class="quick">
+                <button class="btn sm @(_quick == "1h" ? "on" : "")" @onclick='() => Quick("1h")'>Last hour</button>
+                <button class="btn sm @(_quick == "24h" ? "on" : "")" @onclick='() => Quick("24h")'>24 h</button>
+                <button class="btn sm @(_quick == "7d" ? "on" : "")" @onclick='() => Quick("7d")'>7 days</button>
+                <button class="btn sm @(_quick == "y14" ? "on" : "")" @onclick='() => Quick("y14")'>Yesterday 14:00–16:00</button>
+                <button class="btn sm @(_quick == "d3" ? "on" : "")" @onclick='() => Quick("d3")'>3 days ago 14:00–16:00</button>
+            </div>
+            <div class="range">
+                <label>From <input type="datetime-local" @bind="_from" @bind:format="yyyy-MM-ddTHH:mm" @bind:after="Custom" /></label>
+                <label>To <input type="datetime-local" @bind="_to" @bind:format="yyyy-MM-ddTHH:mm" @bind:after="Custom" /></label>
+                <label>Order
+                    <select @bind="_order" @bind:after="Reload">
+                        <option value="desc">newest first</option>
+                        <option value="asc">oldest first</option>
+                    </select>
+                </label>
+                <label>Rows
+                    <select @bind="_pageSize" @bind:after="Reload">
+                        <option value="25">25</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                </label>
+            </div>
+            @if (_rangeError is not null) { <div class="validation-message">@_rangeError</div> }
+        </div>
+
+        @if (_error is not null)
+        {
+            <div class="alert error">@_error</div>
+        }
+        else if (_result is null)
+        {
+            <div class="empty"><span class="spinner" style="display:inline-block"></span> Querying…</div>
+        }
+        else
+        {
+            <div class="history-summary">
+                <span><b>@_result.TotalInRange.ToString("N0")</b> readings in range</span>
+                @if (_result.TotalInRange > 0)
+                {
+                    <span>min <b>@V(_result.Min)</b></span>
+                    <span>avg <b>@V(_result.Average)</b></span>
+                    <span>max <b>@V(_result.Max)</b></span>
+                }
+                <span class="muted">stored @Ago(_result.FirstReading) → @Ago(_result.LastReading)</span>
+            </div>
+
+            @if (_result.Buckets.Count > 1)
+            {
+                <div class="bucket-chart" title="@_result.BucketMinutes-minute buckets: band = min…max, line = average">
+                    <svg viewBox="0 0 600 110" preserveAspectRatio="none">
+                        <polygon class="band" points="@BandPoints()" />
+                        <polyline class="avg" points="@AvgPoints()" />
+                    </svg>
+                    <div class="bucket-axis"><span>@Local(_result.From)</span><span>@_result.BucketMinutes-min buckets · min–max band, avg line</span><span>@Local(_result.To)</span></div>
+                </div>
+            }
+
+            @if (_result.Rows.Count == 0)
+            {
+                <div class="empty">No readings between @Local(_result.From) and @Local(_result.To).</div>
+            }
+            else
+            {
+                <div class="table-wrap history-rows">
+                    <table>
+                        <thead><tr><th>Time</th><th>Value</th><th>Δ</th></tr></thead>
+                        <tbody>
+                            @foreach (var row in _result.Rows)
+                            {
+                                <tr @key="row.Timestamp">
+                                    <td class="mono">@row.Timestamp.ToLocalTime().ToString("ddd dd MMM HH:mm:ss")</td>
+                                    <td class="mono">@V(row.Value)</td>
+                                    <td class="mono @DeltaClass(row.Delta)">@DeltaText(row.Delta)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="pager">
+                    <button class="btn sm" @onclick="Prev" disabled="@(_skip == 0 || _loading)">← Prev</button>
+                    <span>@(_skip + 1)–@(_skip + _result.Rows.Count) of @_result.TotalInRange.ToString("N0")</span>
+                    <button class="btn sm" @onclick="Next" disabled="@(_skip + _result.Rows.Count >= _result.TotalInRange || _loading)">Next →</button>
+                </div>
+            }
+
+            <div class="query-cost">
+                AVL range query: visited <b>@_result.Stats.NodesVisited</b> of @_result.Stats.SeriesSize.ToString("N0") nodes for this page and
+                <b>@_result.Stats.AggregateNodesVisited</b> for count/min/avg/max · tree height <b>@_result.Stats.TreeHeight</b> (AVL bound @_result.Stats.MaxAvlHeight)
+                · <b>@_result.Stats.TreeMicroseconds.ToString("0.#") µs</b>.
+                A linear scan compares all @_result.Stats.LinearComparisons.ToString("N0") readings @LinearSuffix
+            </div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public string? Mac { get; set; }
+    [Parameter] public string? Name { get; set; }
+
+    [Inject] private GatewayApiClient Api { get; set; } = default!;
+
+    private DateTime _from;
+    private DateTime _to;
+    private string _order = "desc";
+    private bool NewestFirst => _order == "desc";
+    private int _pageSize = 25;
+    private int _skip;
+    private string _quick = "24h";
+    private HistoryQueryResult? _result;
+    private string? _error;
+    private string? _rangeError;
+    private bool _loading;
+    private string? _loadedMac;
+
+    protected override void OnInitialized()
+    {
+        var saved = Ui.Topology;
+        _order = saved.HistoryNewestFirst ? "desc" : "asc";
+        _pageSize = saved.HistoryPageSize;
+        if (saved.HistoryFrom is { } f && saved.HistoryTo is { } t) { _from = f; _to = t; _quick = ""; }
+        else SetQuick("24h");
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Mac != _loadedMac)
+        {
+            _loadedMac = Mac;
+            _skip = 0;
+            _result = null;
+            if (!string.IsNullOrEmpty(Mac)) await Load();
+        }
+    }
+
+    private void SetQuick(string key)
+    {
+        var now = DateTime.Now;
+        var today = now.Date;
+        (_from, _to) = key switch
+        {
+            "1h" => (now.AddHours(-1), now),
+            "7d" => (now.AddDays(-7), now),
+            "y14" => (today.AddDays(-1).AddHours(14), today.AddDays(-1).AddHours(16)),
+            "d3" => (today.AddDays(-3).AddHours(14), today.AddDays(-3).AddHours(16)),
+            _ => (now.AddHours(-24), now)
+        };
+        _quick = key;
+    }
+
+    private async Task Quick(string key)
+    {
+        SetQuick(key);
+        Ui.Topology.HistoryFrom = null;          // quick ranges are relative to "now", so don't pin them
+        Ui.Topology.HistoryTo = null;
+        _skip = 0;
+        await Load();
+    }
+
+    private async Task Custom()
+    {
+        _quick = "";
+        Ui.Topology.HistoryFrom = _from;
+        Ui.Topology.HistoryTo = _to;
+        _skip = 0;
+        await Load();
+    }
+
+    private async Task Reload()
+    {
+        Ui.Topology.HistoryNewestFirst = NewestFirst;
+        Ui.Topology.HistoryPageSize = _pageSize;
+        _skip = 0;
+        await Load();
+    }
+
+    private async Task Prev() { _skip = Math.Max(0, _skip - _pageSize); await Load(); }
+    private async Task Next() { _skip += _pageSize; await Load(); }
+
+    private async Task Load()
+    {
+        if (string.IsNullOrEmpty(Mac)) return;
+        _rangeError = null;
+        if (_from >= _to) { _rangeError = "'From' must be earlier than 'To'."; return; }
+
+        _loading = true;
+        try
+        {
+            var r = await Api.GetHistoryRangeAsync(Mac, ToOffset(_from), ToOffset(_to), _skip, _pageSize, NewestFirst,
+                bucketMinutes: (_to - _from).TotalHours <= 3 ? 15 : 60);
+            if (r.Success) { _result = r.Value; _error = null; }
+            else { _result = null; _error = r.Error; }
+        }
+        catch (Exception ex) { _error = $"API unreachable: {ex.Message}"; }
+        finally { _loading = false; }
+    }
+
+    private static DateTimeOffset ToOffset(DateTime local) =>
+        new(DateTime.SpecifyKind(local, DateTimeKind.Unspecified), TimeZoneInfo.Local.GetUtcOffset(local));
+
+    // ------------------------------------------------------------------ display helpers
+    private string LinearSuffix => _result?.Stats.LinearMicroseconds is { } lin ? $"({lin:0.#} µs)." : ".";
+    private string Unit => _result?.Unit ?? "";
+    private string V(double? v) => v is null ? "–" : $"{v.Value.ToString(Unit == "W" ? "0" : "0.##")}{(Unit.Length > 0 ? " " + Unit : "")}";
+    private static string Local(DateTimeOffset t) => t.ToLocalTime().ToString("dd MMM HH:mm");
+    private static string Ago(DateTimeOffset? t) => t is null ? "–" : t.Value.ToLocalTime().ToString("dd MMM HH:mm");
+    private static string DeltaText(double? d) => d is null ? "" : d > 0 ? $"▲ {d:0.##}" : d < 0 ? $"▼ {Math.Abs(d.Value):0.##}" : "=";
+    private static string DeltaClass(double? d) => d is null or 0 ? "" : d > 0 ? "up" : "down";
+
+    private (double Lo, double Hi) Scale()
+    {
+        var withData = _result!.Buckets.Where(b => b.Count > 0).ToList();
+        if (withData.Count == 0) return (0, 1);
+        var lo = withData.Min(b => b.Min ?? 0);
+        var hi = withData.Max(b => b.Max ?? 0);
+        return hi - lo < 1e-9 ? (lo - 1, hi + 1) : (lo, hi);
+    }
+
+    private string X(int i) => (_result!.Buckets.Count <= 1 ? 0 : i * 600.0 / (_result.Buckets.Count - 1)).ToString("0.#", CultureInfo.InvariantCulture);
+    private string Y(double v, (double Lo, double Hi) s) => (105 - (v - s.Lo) / (s.Hi - s.Lo) * 100).ToString("0.#", CultureInfo.InvariantCulture);
+
+    private string AvgPoints()
+    {
+        var s = Scale();
+        return string.Join(" ", _result!.Buckets.Select((b, i) => (b, i)).Where(t => t.b.Count > 0).Select(t => $"{X(t.i)},{Y(t.b.Average ?? 0, s)}"));
+    }
+
+    private string BandPoints()
+    {
+        var s = Scale();
+        var pts = _result!.Buckets.Select((b, i) => (b, i)).Where(t => t.b.Count > 0).ToList();
+        var top = pts.Select(t => $"{X(t.i)},{Y(t.b.Max ?? 0, s)}");
+        var bottom = pts.AsEnumerable().Reverse().Select(t => $"{X(t.i)},{Y(t.b.Min ?? 0, s)}");
+        return string.Join(" ", top.Concat(bottom));
+    }
+}
