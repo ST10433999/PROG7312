@@ -1,0 +1,150 @@
+@* Part 3 — SVG view of the mesh graph. Coordinates are the floor-plan metres the API uses, so no layout maths here. *@
+
+<div class="mesh-map">
+    <svg viewBox="@ViewBox" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Mesh network topology">
+        @* ---- zone (subnet) quadrants *@
+        @foreach (var (subnet, i) in Snapshot.Subnets.Take(4).Select((s, i) => (s, i)))
+        {
+            var x = i % 2 * Snapshot.Width / 2;
+            var y = i / 2 * Snapshot.Height / 2;
+            @* SVG <text> is wrapped in <g>: on its own Razor would treat <text> as its own text tag *@
+            <g>
+                <rect class="zone @(Dimmed(subnet) ? "dim" : "") @(Subnet == subnet ? "focus" : "")" x="@F(x)" y="@F(y)" width="@F(Snapshot.Width / 2)" height="@F(Snapshot.Height / 2)" rx="1.5" />
+                <text class="zone-label" x="@F(x + 1.5)" y="@F(y + 3.4)">@subnet</text>
+            </g>
+        }
+
+        @* ---- links: everything first (faint), then the spanning tree, then the tracked route on top *@
+        @foreach (var link in Snapshot.Links)
+        {
+            if (!ShowAllLinks && !link.InTree && link.Active) continue;
+            if (!_nodes.TryGetValue(link.A, out var a) || !_nodes.TryGetValue(link.B, out var b)) continue;
+            <line class="@LinkClass(link)" x1="@F(a.X)" y1="@F(a.Y)" x2="@F(b.X)" y2="@F(b.Y)">
+                <title>@LinkTitle(link, a, b)</title>
+            </line>
+        }
+
+        @if (PreviousPath is { Count: > 1 })
+        {
+            <polyline class="route-previous" points="@Points(PreviousPath)" />
+        }
+        @if (RoutePath is { Count: > 1 })
+        {
+            <polyline class="route-glow" points="@Points(RoutePath)" />
+            <polyline class="route-line" points="@Points(RoutePath)" />
+        }
+
+        @* ---- nodes *@
+        @foreach (var node in Snapshot.Nodes)
+        {
+            var selected = node.MacAddress.Equals(SelectedMac, StringComparison.OrdinalIgnoreCase);
+            var css = $"node {node.Kind} {node.Status}{(selected ? " selected" : "")}{(node.Critical ? " critical" : "")}{(Dimmed(node.Subnet) && node.Kind != MeshNodeKind.Gateway ? " dim" : "")}{(OnRoute(node) ? " on-route" : "")}";
+            <g class="@css" @key="node.MacAddress" @onclick="() => OnSelect.InvokeAsync(node.MacAddress)">
+                @switch (node.Kind)
+                {
+                    case MeshNodeKind.Gateway:
+                        <g>
+                            <circle cx="@F(node.X)" cy="@F(node.Y)" r="2.6" />
+                            <text class="glyph" x="@F(node.X)" y="@F(node.Y + 1)">GW</text>
+                        </g>
+                        break;
+                    case MeshNodeKind.Router:
+                        <g>
+                            <rect x="@F(node.X - 1.8)" y="@F(node.Y - 1.8)" width="3.6" height="3.6" rx="0.6" />
+                            <text class="glyph" x="@F(node.X)" y="@F(node.Y + 0.75)">R</text>
+                        </g>
+                        break;
+                    default:
+                        <g>
+                            <circle class="hit" cx="@F(node.X)" cy="@F(node.Y)" r="2.4" />
+                            <circle cx="@F(node.X)" cy="@F(node.Y)" r="@(selected ? "1.5" : "1.05")" />
+                        </g>
+                        break;
+                }
+                @if (node.Status is MeshNodeStatus.Failed or MeshNodeStatus.Silent)
+                {
+                    <path class="cross" d="@CrossPath(node)" />
+                }
+                <title>@Tooltip(node)</title>
+            </g>
+        }
+    </svg>
+
+    <div class="mesh-legend">
+        <span><i class="dot Online"></i>online</span>
+        <span><i class="dot Failed"></i>failed</span>
+        <span><i class="dot Silent"></i>silent (heartbeat)</span>
+        <span><i class="dot Isolated"></i>isolated</span>
+        <span><i class="ring"></i>critical relay</span>
+        <span><i class="bar tree"></i>MST link</span>
+        <span><i class="bar route"></i>tracked route</span>
+        <span><i class="bar prev"></i>route before healing</span>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public MeshSnapshot Snapshot { get; set; } = new();
+    [Parameter] public string? SelectedMac { get; set; }
+    [Parameter] public string? Subnet { get; set; }
+    [Parameter] public bool ShowAllLinks { get; set; } = true;
+    /// <summary>MACs from the tracked sensor to the gateway.</summary>
+    [Parameter] public List<string>? RoutePath { get; set; }
+    /// <summary>MACs of the route used before the last self-healing event.</summary>
+    [Parameter] public List<string>? PreviousPath { get; set; }
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+
+    private Dictionary<string, MeshNode> _nodes = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _routeSet = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<(string, string)> _routeLinks = new();
+
+    protected override void OnParametersSet()
+    {
+        _nodes = Snapshot.Nodes.ToDictionary(n => n.MacAddress, StringComparer.OrdinalIgnoreCase);
+        _routeSet = new HashSet<string>(RoutePath ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+        _routeLinks = new HashSet<(string, string)>();
+        if (RoutePath is { Count: > 1 })
+            for (var i = 1; i < RoutePath.Count; i++)
+            {
+                _routeLinks.Add((RoutePath[i - 1].ToUpperInvariant(), RoutePath[i].ToUpperInvariant()));
+                _routeLinks.Add((RoutePath[i].ToUpperInvariant(), RoutePath[i - 1].ToUpperInvariant()));
+            }
+    }
+
+    private bool Dimmed(string subnet) => !string.IsNullOrEmpty(Subnet) && !subnet.Equals(Subnet, StringComparison.OrdinalIgnoreCase);
+
+    private bool OnRoute(MeshNode node) => _routeSet.Contains(node.MacAddress);
+
+    private string LinkClass(MeshLink link)
+    {
+        var css = "link";
+        if (link.Backbone) css += " backbone";
+        if (!link.Active) css += " inactive";
+        else if (link.InTree) css += " tree";
+        if (_routeLinks.Contains((link.A.ToUpperInvariant(), link.B.ToUpperInvariant()))) css += " on-route";
+        if (_nodes.TryGetValue(link.A, out var a) && _nodes.TryGetValue(link.B, out var b) && Dimmed(a.Subnet) && Dimmed(b.Subnet)) css += " dim";
+        return css;
+    }
+
+    private string Points(List<string> path) =>
+        string.Join(" ", path.Where(_nodes.ContainsKey).Select(m => $"{F(_nodes[m].X)},{F(_nodes[m].Y)}"));
+
+    private static string Tooltip(MeshNode n)
+    {
+        var hops = n.Hops >= 0 ? $"{n.Hops} hop(s) to gateway" : "no route to gateway";
+        var relay = n.Downstream > 0 ? $" · relays for {n.Downstream} node(s)" : "";
+        var critical = n.Critical ? " · CRITICAL: single point of failure" : "";
+        return $"{n.Name} ({n.MacAddress})\n{n.Kind} · {n.Subnet} · {n.Status}\n{hops}{relay}{critical}";
+    }
+
+    private string ViewBox => $"-2 -2 {F(Snapshot.Width + 4)} {F(Snapshot.Height + 4)}";
+
+    private static string LinkTitle(MeshLink link, MeshNode a, MeshNode b) =>
+        $"{a.Name} ↔ {b.Name} · {link.DistanceMetres:0.#} m · {(link.Backbone ? "PoE backbone" : $"{link.Rssi} dBm")} · " +
+        $"{link.EnergyMicroJoules:0.#} µJ/frame{(link.InTree ? " · in MST" : "")}";
+
+    private static string CrossPath(MeshNode n) =>
+        $"M{F(n.X - 1.1)} {F(n.Y - 1.1)} L{F(n.X + 1.1)} {F(n.Y + 1.1)} M{F(n.X + 1.1)} {F(n.Y - 1.1)} L{F(n.X - 1.1)} {F(n.Y + 1.1)}";
+
+    /// <summary>SVG attributes need '.' decimals whatever the browser culture.</summary>
+    private static string F(double v) => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+}
