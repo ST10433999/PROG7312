@@ -146,6 +146,7 @@
         {
             _loadedMac = Mac;
             _skip = 0;
+            if (!string.IsNullOrEmpty(_quick)) SetQuick(_quick);   // relative ranges ("last 24 h") move with the clock
             _result = null;
             if (!string.IsNullOrEmpty(Mac)) await Load();
         }

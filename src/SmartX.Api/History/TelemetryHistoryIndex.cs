@@ -116,9 +116,12 @@ public sealed class TelemetryHistoryIndex
 
             // The three tree operations are timed together; the best of three runs is reported so a one-off
             // GC pause or cold cache line doesn't misrepresent an operation that takes a few microseconds.
+            // One extra reading is fetched on the chronologically older side of the page, so the oldest row on
+            // the page still gets a delta (ascending: the reading just before the page; descending: just after it).
+            var fetchSkip = newestFirst ? skip : Math.Max(0, skip - 1);
             int total = 0, visited = 0;
             var aggregate = RangeAggregate.Empty;
-            var page = new List<KeyValuePair<HistoryKey, double>>(take);
+            var page = new List<KeyValuePair<HistoryKey, double>>(take + 1);
             var best = double.MaxValue;
             for (var run = 0; run < 3; run++)
             {
@@ -126,7 +129,7 @@ public sealed class TelemetryHistoryIndex
                 var t0 = Stopwatch.GetTimestamp();
                 total = tree.CountRange(lo, hi);                                         // O(log n) – size augmentation
                 aggregate = total > 0 ? tree.Aggregate(lo, hi) : RangeAggregate.Empty;   // O(log n) – sum/min/max augmentation
-                visited = tree.Range(lo, hi, page, skip, take, newestFirst);             // O(log n + take)
+                visited = tree.Range(lo, hi, page, fetchSkip, take + 1, newestFirst);    // O(log n + take)
                 best = Math.Min(best, Stopwatch.GetElapsedTime(t0).TotalMicroseconds);
             }
 
@@ -158,13 +161,22 @@ public sealed class TelemetryHistoryIndex
                 }
             };
 
-            // Rows, with the change from the chronologically previous reading on the page.
+            // Split the fetched readings into the page itself and the older neighbour used only for its delta.
+            KeyValuePair<HistoryKey, double>? olderNeighbour = null;
+            if (!newestFirst && skip > 0 && page.Count > 0) { olderNeighbour = page[0]; page.RemoveAt(0); }
+            if (page.Count > take)
+            {
+                if (newestFirst) olderNeighbour = page[^1];
+                page.RemoveRange(take, page.Count - take);
+            }
+
+            // Rows, each with the change from the chronologically previous reading (which may sit just off the page).
             for (var i = 0; i < page.Count; i++)
             {
                 var previousIndex = newestFirst ? i + 1 : i - 1;
-                double? delta = previousIndex >= 0 && previousIndex < page.Count
-                    ? Math.Round(page[i].Value - page[previousIndex].Value, 3)
-                    : null;
+                double? previous = previousIndex >= 0 && previousIndex < page.Count ? page[previousIndex].Value
+                    : olderNeighbour?.Value;
+                double? delta = previous is { } p ? Math.Round(page[i].Value - p, 3) : null;
                 result.Rows.Add(new HistoryRow { Timestamp = page[i].Key.Timestamp, Value = Math.Round(page[i].Value, 3), Delta = delta });
             }
 

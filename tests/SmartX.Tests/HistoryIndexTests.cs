@@ -51,8 +51,23 @@ public class HistoryIndexTests
         Assert.Equal(from, page1.Rows[0].Timestamp);
         Assert.Equal(from.AddMinutes(50), page2.Rows[0].Timestamp);
         Assert.Equal(289, page1.TotalInRange);
-        Assert.Null(page1.Rows[0].Delta);
+        Assert.Null(page1.Rows[0].Delta);                       // first reading of the range: nothing before it
         Assert.Equal(0.0, page1.Rows[1].Delta);
+        Assert.NotNull(page2.Rows[0].Delta);                    // page edge: delta from the reading on the previous page
+        Assert.Equal(10, page2.Rows.Count);
+    }
+
+    [Fact]
+    public void Newest_first_pages_have_a_delta_on_every_row_including_the_page_edge()
+    {
+        var index = new TelemetryHistoryIndex();
+        for (var i = 0; i < 30; i++) index.Record(Mac, Day.AddMinutes(i), i * 2);   // value rises by 2 each minute
+
+        var page = index.Query(Mac, Day, Day.AddHours(1), skip: 0, take: 10, newestFirst: true)!;
+
+        Assert.Equal(10, page.Rows.Count);
+        Assert.Equal(Day.AddMinutes(29), page.Rows[0].Timestamp);
+        Assert.All(page.Rows, r => Assert.Equal(2.0, r.Delta));     // the oldest row uses the reading just off the page
     }
 
     [Fact]
