@@ -34,14 +34,17 @@ public static class MeshTopologyBuilder
     {
         var all = sensors.ToList();
         var zones = DefaultZones
-            .Concat(all.Select(ZoneOf).Where(z => !DefaultZones.Contains(z)).Distinct().OrderBy(z => z, StringComparer.OrdinalIgnoreCase))
+            .Concat(all.Select(ZoneOf)
+                .Where(z => !DefaultZones.Contains(z, StringComparer.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(z => z, StringComparer.OrdinalIgnoreCase))
             .ToList();
 
         var graph = new MeshGraph { Width = Width, Height = Height };
         var gateway = graph.AddVertex(GatewayMac, "Smart-X Gateway", MeshNodeKind.Gateway, "Backbone", Width / 2, Height / 2);
 
         // ---- one border router per zone, at the centre of its quadrant
-        var routers = new Dictionary<string, MeshVertex>(StringComparer.OrdinalIgnoreCase);
+        var routers = new Dictionary<string, MeshVertex>(StringComparer.OrdinalIgnoreCase);   // zone names match case-insensitively
         for (var z = 0; z < zones.Count; z++)
         {
             var (qx, qy) = Quadrant(z);
@@ -91,7 +94,7 @@ public static class MeshTopologyBuilder
                 graph.Connect(v, other);
 
         foreach (var router in routers.Values)
-            foreach (var (other, _) in Nearest(router, sensorVertices.Where(s => s.Subnet == router.Subnet), RouterFanOut))
+            foreach (var (other, _) in Nearest(router, sensorVertices.Where(s => s.Subnet.Equals(router.Subnet, StringComparison.OrdinalIgnoreCase)), RouterFanOut))
                 graph.Connect(router, other);
 
         foreach (var (other, _) in Nearest(gateway, sensorVertices, GatewayFanOut))
