@@ -4,4 +4,7 @@
     <Project Path="src/SmartX.Client/SmartX.Client.csproj" />
     <Project Path="src/SmartX.Shared/SmartX.Shared.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SmartX.Tests/SmartX.Tests.csproj" />
+  </Folder>
 </Solution>
