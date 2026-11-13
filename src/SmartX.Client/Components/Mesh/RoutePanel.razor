@@ -52,13 +52,21 @@
         @if (Route.Reachable && Route.TreePath.Count > 0)
         {
             <div class="hop-chain" aria-label="Route along the minimum spanning tree">
-                @foreach (var (hop, i) in Route.TreePath.Select((h, i) => (h, i)))
+                @foreach (var (hop, i) in VisibleHops)
                 {
+                    if (i == HiddenFrom)
+                    {
+                        <button class="hop-more" @onclick="() => _showAllHops = true" title="Show every hop">… @(Route.TreePath.Count - HeadHops - TailHops) more hops …</button>
+                    }
                     if (i > 0)
                     {
                         <span class="hop-link" title="@hop.LinkRssi dBm">→ @hop.LinkEnergyMicroJoules.ToString("0") µJ</span>
                     }
                     <span class="hop @hop.Kind">@hop.Name<small>@hop.Subnet</small></span>
+                }
+                @if (_showAllHops && Route.TreePath.Count > HeadHops + TailHops + 1)
+                {
+                    <button class="hop-more" @onclick="() => _showAllHops = false">show fewer</button>
                 }
             </div>
             <div class="route-metrics">
@@ -105,6 +113,24 @@
     [Parameter] public EventCallback<string> OnFail { get; set; }
     [Parameter] public EventCallback<string> OnRestore { get; set; }
 
+    private const int HeadHops = 5, TailHops = 3;
+    private bool _showAllHops;
+
+    /// <summary>Long routes are shown as the first and last few hops, with a button to expand the middle.</summary>
+    private IEnumerable<(RouteHop Hop, int Index)> VisibleHops
+    {
+        get
+        {
+            var all = Route!.TreePath.Select((h, i) => (h, i));
+            return _showAllHops || Route.TreePath.Count <= HeadHops + TailHops + 1
+                ? all
+                : all.Where(t => t.i < HeadHops || t.i >= Route.TreePath.Count - TailHops);
+        }
+    }
+
+    /// <summary>Index of the first hop after the collapsed gap (−1 when nothing is hidden).</summary>
+    private int HiddenFrom => _showAllHops || Route is null || Route.TreePath.Count <= HeadHops + TailHops + 1 ? -1 : Route.TreePath.Count - TailHops;
+
     private string _query = "";
     private string? _inputError;
     private string? _lastRouteMac;
@@ -122,6 +148,7 @@
         {
             _lastRouteMac = Route.MacAddress;
             _query = Route.MacAddress;
+            _showAllHops = false;
             _inputError = null;
         }
     }
