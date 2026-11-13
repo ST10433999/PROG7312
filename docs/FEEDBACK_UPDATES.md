@@ -80,6 +80,8 @@ These were found by compiling and running the code on the .NET 10 SDK and by end
 | B8 | Part 3 history | The *Order* drop-down bound a `bool` to `"true"/"false"` options and rendered blank. | Bound to a `desc`/`asc` string. | Visual check |
 | B9 | Part 3 routing | Long MST chains looked wrong next to Dijkstra's shorter path. | Both are shown with an explanation. The dashboard reports per-round energy with and without aggregation: MST 49.9 mJ vs SPT 51.0 mJ aggregated, and the reverse without aggregation. | `Mst_is_cheapest_per_round_with_aggregation_and_dijkstra_without` |
 | B10 | Part 3 radio model doc | The doc comment claimed two short hops always beat one long hop. That is false within radio range for these constants. | Comment corrected; test asserts the actual behaviour. | `Radio_model_costs_grow_with_distance_and_range_is_enforced` |
+| B11 | API text on non-English locales | On a computer with a decimal-comma locale, route explanations printed "49,9 mJ". | The API runs with the invariant culture, so server-generated text always uses '.' decimals. | `Program.cs` |
+| B12 | Part 3 route tracker | A route of 28 hops after a router failure made the panel very tall. | Long routes show the first 5 and last 3 hops, with a "… N more hops …" button to expand. | Visual check |
 
 ---
 
