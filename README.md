@@ -53,7 +53,7 @@ The Part 1 research report is in [`docs/PROG7312_POE_Part1_Research_Report.pdf`]
                                   │  AvlTree<K,V>, BinaryMinHeap<T>,    │
                                   │  DisjointSet, ring buffer, …        │
                                   └────────────────────────────────────┘
-                                  tests/SmartX.Tests (xUnit): 33 tests over the structures and services
+                                  tests/SmartX.Tests (xUnit): 34 tests over the structures and services
 ```
 
 * **`SmartX.Shared`**: class library referenced by both ends. Holds every DTO with its DataAnnotations, so the **same validation rules run in the browser and on the server**. It also holds the custom data structures: `TelemetryPacket<T>`, `TelemetryRingBuffer<T>`, `HistoricalBatchStore<T>`, and in Part 3 `AvlTree<TKey,TValue>`, `BinaryMinHeap<T>` and `DisjointSet`.
@@ -629,7 +629,7 @@ scripts/mesh-demo.sh, docs/Part3_Demo_Script.md, docs/FEEDBACK_UPDATES.md       
 
 ## 13. Automated tests
 
-`tests/SmartX.Tests` (xUnit, 33 tests) runs with `dotnet test SmartX.slnx`. Each data structure is checked against a trusted reference:
+`tests/SmartX.Tests` (xUnit, 34 tests) runs with `dotnet test SmartX.slnx`. Each data structure is checked against a trusted reference:
 
 | Area | What the tests prove |
 | --- | --- |
@@ -637,7 +637,7 @@ scripts/mesh-demo.sh, docs/Part3_Demo_Script.md, docs/FEEDBACK_UPDATES.md       
 | `BinaryMinHeap`, `DisjointSet` | 10 000 random pushes pop in sorted order and keep the heap property; union–find rejects a cycle. |
 | Graph algorithms | BFS depths and blocking; DFS islands; articulation points on a chain and a ring; Prim and Kruskal equal a **brute-force** minimum over every spanning subset; routing around a down node; Dijkstra never costs more than the tree path; radio model bounds. |
 | `MeshNetworkService` | Seeded fleet starts fully connected; Prim = Kruskal; routes start at the sensor and end at the gateway; failing the busiest relay re-routes nodes and restoring undoes it; BFS per subnet gives hop advice; critical nodes really are single points of failure; MST is cheapest per aggregated round, Dijkstra per un-aggregated round. |
-| `TelemetryHistoryIndex` | A 14:00–16:00 window returns exactly 25 readings newest-first; paging, deltas, hourly buckets covering every reading once; retention eviction; benchmark results equal the linear scan. |
+| `TelemetryHistoryIndex` | A 14:00–16:00 window returns exactly 25 readings newest-first; paging, deltas (including across page edges), hourly buckets covering every reading once; retention eviction; benchmark results equal the linear scan. |
 | Predictive engine (feedback fix) | Still learns after two episodes; two-day-old behaviour decays below the threshold and is pruned; dismiss snoozes and lowers confidence; accept reinforces. |
 
 ---

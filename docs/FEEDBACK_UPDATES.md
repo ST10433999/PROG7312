@@ -82,6 +82,12 @@ These were found by compiling and running the code on the .NET 10 SDK and by end
 | B10 | Part 3 radio model doc | The doc comment claimed two short hops always beat one long hop. That is false within radio range for these constants. | Comment corrected; test asserts the actual behaviour. | `Radio_model_costs_grow_with_distance_and_range_is_enforced` |
 | B11 | API text on non-English locales | On a computer with a decimal-comma locale, route explanations printed "49,9 mJ". | The API runs with the invariant culture, so server-generated text always uses '.' decimals. | `Program.cs` |
 | B12 | Part 3 route tracker | A route of 28 hops after a router failure made the panel very tall. | Long routes show the first 5 and last 3 hops, with a "… N more hops …" button to expand. | Visual check |
+| B13 | Part 3 route tracker | The "route before healing" was taken from the single most recent healing event, so an unrelated heartbeat event a few seconds later erased a router failure's re-route evidence. | The previous route is remembered per node (own uplink or any relay above it) and shown with the time it changed. | `MeshNetworkService.RememberChangedRoutes`; test `Failing_the_busiest_relay_heals_the_mesh_and_restore_undoes_it` |
+| B14 | Part 3 history log | The oldest row on each page had no Δ, because its previous reading sat on the neighbouring page. | The query fetches one neighbouring reading just off the page for the delta. | test `Newest_first_pages_have_a_delta_on_every_row_including_the_page_edge` |
+| B15 | Feedback endpoint | Any string was accepted as a rule key, so a client could grow the feedback table without bound. | Only keys the engine issues (`rule\|…`, `insight\|…`, `fault\|…`) are accepted (400 otherwise); the table is capped at 2 000 entries, weakest evicted. | test `Dismiss_snoozes_and_lowers_confidence_accept_reinforces` |
+| B16 | Topology page | Following the sidebar's last-sensor link while already on `/topology/{mac}` changed the URL but not the selection (Blazor reuses the page). | The page follows its route parameter in `OnParametersSetAsync`. | Browser check |
+| B17 | Mesh builder | A zone typed in a different case through the API (`zone 1`) created a second, empty router. | Zone names are matched case-insensitively. | Code review |
+| B18 | History log | "Last 24 h" stayed anchored to the moment the page opened when another sensor was selected later. | Relative ranges are recomputed whenever the selected sensor changes. | Browser check |
 
 ---
 
