@@ -28,6 +28,14 @@ public static class SuggestionEndpoints
             return Results.Ok(new { matches = matches.Count, learned = matches.Count == 1 });
         }).WithSummary("The dashboard reports operator searches so the engine can learn which devices are looked up after which alerts.");
 
+        // Part 3 — operator feedback (lecturer feedback on Part 2).
+        g.MapPost("/feedback", (SuggestionFeedbackRequest req, PredictiveEngine engine) =>
+        {
+            var errors = SensorEndpoints.ValidateModel(req);
+            if (errors.Count > 0) return Results.ValidationProblem(errors);
+            return Results.Ok(engine.Feedback(req.RuleKey, req.Verdict));
+        }).WithSummary("Accept or dismiss a suggestion. Accepting reinforces the rule; dismissing halves its weight and snoozes it for 30 minutes.");
+
         return api;
     }
 }
