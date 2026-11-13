@@ -5,6 +5,10 @@ using SmartX.Api.History;
 using SmartX.Api.Mesh;
 using SmartX.Api.Services;
 
+// Server-generated text (alert messages, route explanations) always uses '.' decimals, whatever the host's locale.
+System.Globalization.CultureInfo.DefaultThreadCurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+System.Globalization.CultureInfo.DefaultThreadCurrentUICulture = System.Globalization.CultureInfo.InvariantCulture;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // ---- services -------------------------------------------------------------
