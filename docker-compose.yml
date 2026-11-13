@@ -13,6 +13,12 @@ services:
       Simulator__Enabled: "true"
       # Part 2: FIFO packets processed per 250 ms tick (8 → 32 packets/s)
       Stream__TelemetryPerTick: "8"
+      # Part 3: AVL history archive, mesh heartbeat integration, predictive-engine half-life
+      History__ArchiveDays: "7"
+      History__ArchiveIntervalMinutes: "5"
+      History__MaxPointsPerSensor: "10000"
+      Mesh__UseHeartbeat: "true"
+      Predictive__HalfLifeHours: "6"
       Cors__AllowedOrigins__0: "http://localhost:8081"
       # Optional: 32-byte base64 key for AES-256 attachment encryption (a dev key is derived if empty)
       Attachments__AesKeyBase64: ""
