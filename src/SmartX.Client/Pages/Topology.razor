@@ -111,15 +111,7 @@
 
     private List<string>? RouteMacs => _route is { Reachable: true } r ? r.TreePath.Select(h => h.MacAddress).ToList() : null;
 
-    private List<string>? PreviousMacs
-    {
-        get
-        {
-            if (_route is not { PreviousPath.Count: > 1 } r || _snapshot is null) return null;
-            var byName = _snapshot.Nodes.GroupBy(n => n.Name).ToDictionary(g => g.Key, g => g.First().MacAddress);
-            return r.PreviousPath.Where(byName.ContainsKey).Select(n => byName[n]).ToList();
-        }
-    }
+    private List<string>? PreviousMacs => _route is { PreviousPathMacs.Count: > 1 } r ? r.PreviousPathMacs : null;
 
     // ------------------------------------------------------------------ lifecycle
     protected override async Task OnInitializedAsync()
@@ -175,6 +167,19 @@
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { Toast.Error("Route unavailable", ex.Message); }
+    }
+
+    /// <summary>
+    /// The page instance is reused when the URL changes from /topology/A to /topology/B (e.g. the sidebar's
+    /// last-sensor shortcut), so follow the route parameter here, not only in OnInitialized.
+    /// </summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_snapshot is null || string.IsNullOrWhiteSpace(Mac)) return;
+        var mac = Mac.Trim().ToUpperInvariant();
+        if (mac == _selectedMac) return;
+        _selectedMac = mac;
+        await LoadRoute();
     }
 
     // ------------------------------------------------------------------ interaction

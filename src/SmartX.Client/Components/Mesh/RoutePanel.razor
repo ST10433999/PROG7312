@@ -92,7 +92,7 @@
         @if (Route.PreviousPath.Count > 0)
         {
             <div class="alert rerouted-note">
-                <b>Before the last self-healing event</b> this node used: @string.Join(" → ", Route.PreviousPath)
+                <b>Before its route last changed</b>@(Route.ReroutedAt is { } at ? $" ({at.ToLocalTime():HH:mm:ss})" : "") this node used: @string.Join(" → ", Route.PreviousPath)
             </div>
         }
 

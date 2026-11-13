@@ -173,7 +173,7 @@ public sealed partial class MeshNetworkService
                 $"and the MST makes that total as small as possible ({s.Tree.TotalEnergyMicroJoules / 1000:0.0} mJ vs {s.ShortestTreeWeight / 1000:0.0} mJ for Dijkstra's shortest-path tree). " +
                 (result.StretchPercent <= 0.05
                     ? "This route is also Dijkstra's cheapest single path."
-                    : $"For this one packet on its own, Dijkstra's path is shorter ({result.ShortestPath.Count - 1} hops, {result.ShortestPathEnergyMicroJoules:0} µJ vs {result.TreePathEnergyMicroJoules:0} µJ). " +
+                    : $"For this one packet on its own, Dijkstra's path is cheaper ({result.ShortestPath.Count - 1} hops, {result.ShortestPathEnergyMicroJoules:0} µJ vs {result.TreePathEnergyMicroJoules:0} µJ). " +
                       "That is the latency-versus-fleet-energy trade-off a routing protocol has to make.");
             return result;
         }
@@ -202,16 +202,15 @@ public sealed partial class MeshNetworkService
     }
 
     /// <summary>Adds the route the node used before the last self-healing event, when it was different.</summary>
+    /// <summary>Adds the route the node used before its route last changed, if that differs from the current one.</summary>
     private void AddPreviousPath(RouteResult result, MeshVertex v)
     {
-        if (_previous is null || !ReferenceEquals(_previous.Graph, _state!.Graph)) return;
-        if (_previous.Status[v.Index] != MeshNodeStatus.Online) return;
-
-        var before = new List<string>();
-        for (MeshVertex? at = v; at is not null; at = _previous.Uplink(at)) before.Add(at.Name);
-        var now = result.TreePath.Select(h => h.Name).ToList();
-        if (before.SequenceEqual(now)) return;
-        result.PreviousPath = before;
+        if (!_previousRoutes.TryGetValue(v.Index, out var previous)) return;
+        var now = result.TreePath.Select(h => h.MacAddress).ToList();
+        if (previous.Path.Select(p => p.MacAddress).SequenceEqual(now)) return;
+        result.PreviousPath = previous.Path.Select(p => p.Name).ToList();
+        result.PreviousPathMacs = previous.Path.Select(p => p.MacAddress).ToList();
+        result.ReroutedAt = previous.At;
         result.Rerouted = result.Reachable;
     }
 

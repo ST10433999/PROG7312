@@ -47,7 +47,11 @@ public sealed partial class MeshNetworkService(GatewayState gateway, ILogger<Mes
     private MeshGraph? _graph;
     private uint _graphSignature;
     private MeshState? _state;
-    private MeshState? _previous;
+    /// <summary>
+    /// Per vertex: the route it used before its route last changed. Kept per node so a later, unrelated
+    /// healing event (e.g. another sensor going silent) does not wipe the evidence of this node's re-route.
+    /// </summary>
+    private readonly Dictionary<int, (List<MeshVertex> Path, DateTimeOffset At)> _previousRoutes = new();
     private long _version;
 
     /// <summary>Treat nodes the Part 1 heartbeat considers silent as down. On by default.</summary>
@@ -73,7 +77,7 @@ public sealed partial class MeshNetworkService(GatewayState gateway, ILogger<Mes
         if (_state is null || rebuilt)
         {
             _state = Compute(graph, SpanningTreeAlgorithm.Prim, ++_version);
-            _previous = null;
+            _previousRoutes.Clear();                                      // vertex indexes refer to the old graph
             return null;
         }
 
@@ -82,7 +86,7 @@ public sealed partial class MeshNetworkService(GatewayState gateway, ILogger<Mes
 
         var next = Compute(graph, SpanningTreeAlgorithm.Prim, ++_version);
         var healing = Diff(_state, next, reason);
-        _previous = _state;
+        RememberChangedRoutes(_state, next, healing.At);
         _state = next;
 
         _healing.AddFirst(healing);
@@ -225,6 +229,25 @@ public sealed partial class MeshNetworkService(GatewayState gateway, ILogger<Mes
             Components = GraphTraversal.ConnectedComponents(graph, IsUp).Count,
             Version = version
         };
+    }
+
+    private static List<MeshVertex> PathOf(MeshState s, MeshVertex v)
+    {
+        var path = new List<MeshVertex>();
+        for (MeshVertex? at = v; at is not null; at = s.Uplink(at)) path.Add(at);
+        return path;
+    }
+
+    /// <summary>Stores the old route of every node whose route to the gateway changed (own uplink or any relay above it).</summary>
+    private void RememberChangedRoutes(MeshState before, MeshState after, DateTimeOffset at)
+    {
+        foreach (var v in after.Graph.Vertices)
+        {
+            if (v.Kind == MeshNodeKind.Gateway || before.Status[v.Index] != MeshNodeStatus.Online) continue;
+            var old = PathOf(before, v);
+            var now = after.Status[v.Index] == MeshNodeStatus.Online ? PathOf(after, v) : new List<MeshVertex>();
+            if (!old.SequenceEqual(now)) _previousRoutes[v.Index] = (old, at);
+        }
     }
 
     /// <summary>Which sensors changed uplink, lost their route or got it back between two builds.</summary>

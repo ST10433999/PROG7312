@@ -37,8 +37,12 @@ public sealed class RouteResult
     /// <summary>How much more energy the tree path costs than the cheapest possible single path (0 = identical).</summary>
     public double StretchPercent { get; set; }
 
-    /// <summary>The route before the most recent self-healing event, when that event changed it.</summary>
+    /// <summary>Names along the route this node used before its route last changed (empty if it never changed).</summary>
     public List<string> PreviousPath { get; set; } = new();
+    /// <summary>MAC addresses of the same previous route, for drawing it on the map.</summary>
+    public List<string> PreviousPathMacs { get; set; } = new();
+    /// <summary>When the route last changed.</summary>
+    public DateTimeOffset? ReroutedAt { get; set; }
     public bool Rerouted { get; set; }
 
     /// <summary>For an isolated node: powered neighbours that could carry its traffic if a link came back.</summary>
