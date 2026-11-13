@@ -1,0 +1,152 @@
+/* ------------------------------------------------------------------
+   Smart-X Part 3 – Network Topology & Mesh Routing
+   Uses the design tokens from app.css.
+   ------------------------------------------------------------------ */
+
+/* ---------- layout ---------- */
+.topology-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); gap: 1rem; margin-top: 1rem; align-items: start; }
+.topology-grid.lower { grid-template-columns: minmax(0, 1.25fr) minmax(320px, 1fr); }
+.side-stack { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.side-stack > .card + .card { margin-top: 0; }
+@media (max-width: 1200px) { .topology-grid, .topology-grid.lower { grid-template-columns: 1fr; } }
+
+.mesh-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .8rem 1rem; margin-top: 1rem; padding: .6rem .9rem; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; }
+.mesh-toolbar label { display: inline-flex; align-items: center; gap: .45rem; font-size: .8rem; color: var(--text-muted); }
+.mesh-toolbar select { width: auto; padding: .3rem .5rem; }
+.mesh-toolbar .check input { width: auto; }
+.mesh-toolbar .spacer { flex: 1; }
+.tabs .btn.on, .quick .btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+/* ---------- the map ---------- */
+.map-card { padding: .6rem; }
+.mesh-map svg { width: 100%; height: auto; display: block; background: #0c1116; border-radius: 10px; }
+.mesh-map .zone { fill: rgba(255,255,255,.015); stroke: var(--border); stroke-width: .15; }
+.mesh-map .zone.focus { fill: rgba(45,212,191,.05); stroke: var(--accent); }
+.mesh-map .zone.dim { fill: transparent; }
+.mesh-map .zone-label { fill: var(--text-dim); font-size: 2.4px; font-weight: 700; letter-spacing: .1px; pointer-events: none; }
+
+.mesh-map .link { stroke: #3b4856; stroke-width: .16; opacity: .55; }
+.mesh-map .link.tree { stroke: var(--accent); stroke-width: .32; opacity: .75; }
+.mesh-map .link.backbone { stroke: #818cf8; stroke-width: .55; stroke-dasharray: 1 .6; opacity: .9; }
+.mesh-map .link.inactive { stroke: var(--silent); stroke-dasharray: .5 .5; opacity: .35; }
+.mesh-map .link.dim { opacity: .08; }
+.mesh-map .link.on-route { opacity: 0; }
+
+.mesh-map .route-glow { fill: none; stroke: #fde047; stroke-width: 1.6; opacity: .18; stroke-linecap: round; stroke-linejoin: round; }
+.mesh-map .route-line { fill: none; stroke: #fde047; stroke-width: .55; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1.4 .8; animation: route-flow 1.2s linear infinite; }
+.mesh-map .route-previous { fill: none; stroke: #f472b6; stroke-width: .35; stroke-dasharray: .4 .6; opacity: .8; }
+@keyframes route-flow { to { stroke-dashoffset: -2.2; } }
+
+.mesh-map .node { cursor: pointer; }
+.mesh-map .node circle, .mesh-map .node rect { stroke: #0c1116; stroke-width: .3; transition: r .15s; }
+.mesh-map .node.Online circle, .mesh-map .node.Online rect { fill: var(--healthy); }
+.mesh-map .node.Failed circle, .mesh-map .node.Failed rect { fill: var(--silent); }
+.mesh-map .node.Silent circle, .mesh-map .node.Silent rect { fill: var(--unknown); }
+.mesh-map .node.Isolated circle, .mesh-map .node.Isolated rect { fill: var(--drift); animation: isolated 1.4s ease-in-out infinite; }
+.mesh-map .node.Router rect { fill: #818cf8; }
+.mesh-map .node.Router.Failed rect { fill: var(--silent); }
+.mesh-map .node.Gateway circle { fill: var(--accent); stroke: #e6edf3; stroke-width: .35; }
+.mesh-map .node .glyph { fill: #0b1a18; font-size: 2px; font-weight: 800; text-anchor: middle; pointer-events: none; }
+.mesh-map .node.Router .glyph { fill: #fff; font-size: 2.1px; }
+.mesh-map .node.critical circle, .mesh-map .node.critical rect { stroke: #fde047; stroke-width: .35; stroke-dasharray: .5 .35; }
+.mesh-map .node.on-route circle { stroke: #fde047; stroke-width: .4; }
+.mesh-map .node.selected circle, .mesh-map .node.selected rect { stroke: #fff; stroke-width: .5; }
+.mesh-map .node.dim { opacity: .18; }
+.mesh-map .node circle.hit { fill: transparent !important; stroke: none !important; animation: none !important; }
+.mesh-map .node .cross { stroke: #fff; stroke-width: .35; pointer-events: none; }
+.mesh-map .node:hover circle { stroke: #fff; }
+@keyframes isolated { 50% { opacity: .45; } }
+
+.mesh-legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; padding: .6rem .3rem 0; font-size: .72rem; color: var(--text-muted); }
+.mesh-legend span { display: inline-flex; align-items: center; gap: .35rem; }
+.mesh-legend .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.mesh-legend .dot.Online { background: var(--healthy); }
+.mesh-legend .dot.Failed { background: var(--silent); }
+.mesh-legend .dot.Silent { background: var(--unknown); }
+.mesh-legend .dot.Isolated { background: var(--drift); }
+.mesh-legend .ring { width: 10px; height: 10px; border-radius: 50%; border: 2px dashed #fde047; display: inline-block; }
+.mesh-legend .bar { width: 18px; height: 3px; display: inline-block; border-radius: 2px; }
+.mesh-legend .bar.tree { background: var(--accent); }
+.mesh-legend .bar.route { background: #fde047; }
+.mesh-legend .bar.prev { background: repeating-linear-gradient(90deg, #f472b6 0 3px, transparent 3px 6px); }
+
+/* ---------- chips used across the topology panels ---------- */
+.chip.mesh-Online { background: rgba(34,197,94,.15); color: var(--healthy); }
+.chip.mesh-Failed { background: rgba(239,68,68,.18); color: var(--silent); }
+.chip.mesh-Silent { background: rgba(100,116,139,.25); color: #cbd5e1; }
+.chip.mesh-Isolated { background: rgba(245,158,11,.18); color: var(--drift); }
+.chip.rerouted { background: rgba(244,114,182,.16); color: #f472b6; }
+.chip-cloud { display: flex; flex-wrap: wrap; gap: .3rem; margin: .4rem 0; }
+.chip-cloud .chip, .level-chip { cursor: pointer; }
+.level-chip.Router { background: rgba(129,140,248,.2); color: #a5b4fc; }
+.level-chip.Gateway { background: var(--accent-dim); color: var(--accent); }
+
+/* ---------- route tracker ---------- */
+.route-search { display: flex; gap: .5rem; margin-bottom: .4rem; }
+.route-search input { flex: 1; font-family: var(--mono); font-size: .82rem; }
+.route-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem; align-items: center; margin: .6rem 0; }
+.hop-chain { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; margin: .4rem 0; }
+.hop-chain .hop { display: inline-flex; flex-direction: column; padding: .25rem .55rem; border-radius: 8px; background: var(--bg-elev); border: 1px solid var(--border); font-size: .78rem; font-weight: 600; line-height: 1.2; }
+.hop-chain .hop small { font-size: .62rem; color: var(--text-dim); font-weight: 500; }
+.hop-chain .hop.Gateway { border-color: var(--accent); color: var(--accent); }
+.hop-chain .hop.Router { border-color: #818cf8; color: #a5b4fc; }
+.hop-chain .hop-link { font-size: .68rem; color: #fde047; font-family: var(--mono); }
+.hop-chain.small .hop { font-size: .7rem; padding: .15rem .4rem; }
+.route-metrics { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; font-size: .8rem; color: var(--text-muted); }
+.route-metrics b { color: var(--text); }
+.route-explain { font-size: .82rem; color: var(--text-muted); margin: .6rem 0 .3rem; }
+.alt-path summary { cursor: pointer; font-size: .8rem; color: var(--info); margin-top: .4rem; }
+.alert.rerouted-note { background: rgba(244,114,182,.08); border-color: rgba(244,114,182,.35); color: #f9a8d4; font-size: .8rem; margin-top: .6rem; }
+
+/* ---------- healing feed ---------- */
+.healing { display: flex; flex-direction: column; gap: .35rem; max-height: 320px; overflow-y: auto; }
+.heal { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: .45rem .6rem; font-size: .8rem; }
+.heal summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: .3rem .6rem; align-items: center; list-style: none; }
+.heal summary::-webkit-details-marker { display: none; }
+.heal .ts { font-family: var(--mono); color: var(--text-dim); font-size: .72rem; }
+.heal .trigger { font-weight: 600; }
+.heal .badges { display: inline-flex; flex-wrap: wrap; gap: .3rem; align-items: center; margin-left: auto; }
+.heal ul { margin: .4rem 0 0; padding-left: 1.1rem; color: var(--text-muted); }
+
+/* ---------- BFS panel ---------- */
+.bfs-summary { display: flex; flex-wrap: wrap; gap: .3rem 1rem; font-size: .85rem; margin: .4rem 0 .2rem; }
+.bfs-summary .ok b { color: var(--healthy); }
+.bfs-summary .bad b { color: var(--silent); }
+.bfs-summary .warn b { color: var(--drift); }
+.cutoff-list { display: flex; flex-direction: column; gap: .35rem; }
+.cutoff { background: rgba(245,158,11,.06); border: 1px solid rgba(245,158,11,.3); border-radius: 8px; padding: .4rem .6rem; font-size: .8rem; }
+.levels { max-height: 280px; overflow-y: auto; }
+.level summary { cursor: pointer; font-size: .82rem; padding: .2rem 0; }
+.card h3 { font-size: .85rem; margin: .8rem 0 .3rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
+
+/* ---------- history log ---------- */
+.history-controls { display: flex; flex-direction: column; gap: .5rem; margin-bottom: .6rem; }
+.history-controls .quick { display: flex; flex-wrap: wrap; gap: .35rem; }
+.history-controls .range { display: flex; flex-wrap: wrap; gap: .5rem 1rem; }
+.history-controls label { display: inline-flex; align-items: center; gap: .4rem; font-size: .78rem; color: var(--text-muted); }
+.history-controls input, .history-controls select { width: auto; padding: .3rem .5rem; font-size: .8rem; }
+.history-summary { display: flex; flex-wrap: wrap; gap: .3rem 1.1rem; font-size: .85rem; margin-bottom: .4rem; }
+.bucket-chart svg { width: 100%; height: 110px; display: block; background: var(--bg-elev); border-radius: 8px; }
+.bucket-chart .band { fill: rgba(45,212,191,.18); stroke: none; }
+.bucket-chart .avg { fill: none; stroke: var(--accent); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.bucket-axis { display: flex; justify-content: space-between; font-size: .68rem; color: var(--text-dim); margin: .2rem 0 .6rem; }
+.history-rows { max-height: 360px; overflow-y: auto; }
+.history-rows td.up { color: var(--healthy); }
+.history-rows td.down { color: var(--spike); }
+.pager { display: flex; align-items: center; justify-content: center; gap: 1rem; margin: .6rem 0; font-size: .8rem; color: var(--text-muted); }
+.query-cost { font-size: .76rem; color: var(--text-muted); background: var(--bg-elev); border: 1px dashed var(--border); border-radius: 8px; padding: .5rem .7rem; }
+.query-cost b { color: var(--accent); }
+
+/* ---------- under the hood ---------- */
+.bench { display: flex; flex-direction: column; gap: .3rem; margin: .5rem 0; }
+.bench-bar { display: flex; justify-content: space-between; padding: .35rem .6rem; border-radius: 6px; background: var(--accent-dim); font-size: .8rem; }
+.bench-bar.linear { background: rgba(239,68,68,.12); }
+
+/* ---------- predictive engine feedback (Part 2 fix) ---------- */
+.suggestion .feedback { display: flex; flex-direction: column; gap: .3rem; }
+.suggestion .feedback .btn { justify-content: center; }
+
+/* ---------- sidebar badges ---------- */
+.nav .badge { margin-left: auto; font-size: .62rem; font-weight: 700; padding: .05rem .4rem; border-radius: 999px; background: rgba(239,68,68,.2); color: var(--silent); }
+.nav .badge + .tag { margin-left: .3rem; }
+.nav a.sub-link { padding: .3rem .7rem .3rem 1.6rem; font-size: .72rem; }
