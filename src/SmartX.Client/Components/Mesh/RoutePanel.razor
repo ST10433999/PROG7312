@@ -1,0 +1,153 @@
+@* Part 3 — track a sensor's route to the gateway by MAC address or name. *@
+
+<div class="card">
+    <div class="card-head">
+        <h2>🛰 Route tracker</h2>
+        <small class="muted">MST path vs Dijkstra's cheapest path</small>
+    </div>
+
+    <form class="route-search" @onsubmit="Track" @onsubmit:preventDefault>
+        <input list="mesh-node-list" placeholder="MAC address or name, e.g. A1:2F:00:EA:7D:E3" @bind="_query" @bind:event="oninput" aria-label="Sensor MAC address or name" />
+        <datalist id="mesh-node-list">
+            @foreach (var n in Nodes.Where(n => n.Kind != MeshNodeKind.Gateway).OrderBy(n => n.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                <option value="@n.MacAddress">@n.Name · @n.Subnet</option>
+            }
+        </datalist>
+        <button class="btn primary sm" type="submit">Track</button>
+    </form>
+    @if (_inputError is not null)
+    {
+        <div class="validation-message">@_inputError</div>
+    }
+
+    @if (Route is null)
+    {
+        <div class="empty">Click any node on the map, or type a MAC address, to see the hops its telemetry takes to the gateway.</div>
+    }
+    else
+    {
+        <div class="route-head">
+            <div>
+                <b>@Route.Name</b> <span class="mono muted">@Route.MacAddress</span> · @Route.Subnet
+                <span class="chip mesh-@Route.Status">@Route.Status</span>
+                @if (Route.Rerouted) { <span class="chip rerouted">↻ re-routed</span> }
+            </div>
+            <div class="actions" style="margin:0">
+                @if (Route.Status == MeshNodeStatus.Failed)
+                {
+                    <button class="btn sm" @onclick="() => OnRestore.InvokeAsync(Route.MacAddress)" disabled="@Busy">♻ Restore node</button>
+                }
+                else if (Route.Status != MeshNodeStatus.Silent && !IsGateway)
+                {
+                    <button class="btn sm danger" @onclick="() => OnFail.InvokeAsync(Route.MacAddress)" disabled="@Busy">⚠ Simulate failure</button>
+                }
+                @if (SensorId is { } id)
+                {
+                    <a class="btn sm" href="ingestion/sensors/@id">Sensor profile →</a>
+                }
+            </div>
+        </div>
+
+        @if (Route.Reachable && Route.TreePath.Count > 0)
+        {
+            <div class="hop-chain" aria-label="Route along the minimum spanning tree">
+                @foreach (var (hop, i) in Route.TreePath.Select((h, i) => (h, i)))
+                {
+                    if (i > 0)
+                    {
+                        <span class="hop-link" title="@hop.LinkRssi dBm">→ @hop.LinkEnergyMicroJoules.ToString("0") µJ</span>
+                    }
+                    <span class="hop @hop.Kind">@hop.Name<small>@hop.Subnet</small></span>
+                }
+            </div>
+            <div class="route-metrics">
+                <span>MST route <b>@(Route.TreePath.Count - 1) hops</b> · <b>@Route.TreePathEnergyMicroJoules.ToString("N0") µJ</b>/frame</span>
+                <span>Dijkstra <b>@(Route.ShortestPath.Count - 1) hops</b> · <b>@Route.ShortestPathEnergyMicroJoules.ToString("N0") µJ</b></span>
+                <span>stretch <b>@Route.StretchPercent.ToString("0.#")%</b></span>
+            </div>
+            @if (Route.StretchPercent > 0.05)
+            {
+                <details class="alt-path">
+                    <summary>Dijkstra's cheapest single path</summary>
+                    <div class="hop-chain small">
+                        @foreach (var (hop, i) in Route.ShortestPath.Select((h, i) => (h, i)))
+                        {
+                            if (i > 0) { <span class="hop-link">→</span> }
+                            <span class="hop @hop.Kind">@hop.Name</span>
+                        }
+                    </div>
+                </details>
+            }
+        }
+
+        @if (Route.PreviousPath.Count > 0)
+        {
+            <div class="alert rerouted-note">
+                <b>Before the last self-healing event</b> this node used: @string.Join(" → ", Route.PreviousPath)
+            </div>
+        }
+
+        <p class="route-explain">@Route.Explanation</p>
+
+        @if (Route.Suggestions.Count > 0)
+        {
+            <div class="muted"><b>@(Route.Reachable ? "Neighbours" : Route.Status == MeshNodeStatus.Isolated ? "To reconnect" : "Powered neighbours"):</b> @string.Join(", ", Route.Suggestions.Take(6))</div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public List<MeshNode> Nodes { get; set; } = new();
+    [Parameter] public RouteResult? Route { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback<string> OnTrack { get; set; }
+    [Parameter] public EventCallback<string> OnFail { get; set; }
+    [Parameter] public EventCallback<string> OnRestore { get; set; }
+
+    private string _query = "";
+    private string? _inputError;
+    private string? _lastRouteMac;
+
+    private bool IsGateway => Nodes.FirstOrDefault(n => n.MacAddress == Route?.MacAddress)?.Kind == MeshNodeKind.Gateway;
+    private Guid? SensorId => Nodes.FirstOrDefault(n => n.MacAddress == Route?.MacAddress)?.SensorId;
+
+    private static readonly System.Text.RegularExpressions.Regex MacPattern =
+        new(@"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    protected override void OnParametersSet()
+    {
+        // When a node is picked on the map, mirror it into the search box.
+        if (Route is not null && Route.MacAddress != _lastRouteMac)
+        {
+            _lastRouteMac = Route.MacAddress;
+            _query = Route.MacAddress;
+            _inputError = null;
+        }
+    }
+
+    private async Task Track()
+    {
+        var term = _query.Trim();
+        _inputError = null;
+        if (term.Length == 0) { _inputError = "Enter a MAC address or a sensor name."; return; }
+
+        // Accept a MAC (validated) or a unique name match.
+        string? mac = null;
+        if (MacPattern.IsMatch(term)) mac = term.Replace('-', ':').ToUpperInvariant();
+        else
+        {
+            var matches = Nodes.Where(n => n.Name.Contains(term, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (matches.Count == 1) mac = matches[0].MacAddress;
+            else if (matches.FirstOrDefault(n => n.Name.Equals(term, StringComparison.OrdinalIgnoreCase)) is { } exact) mac = exact.MacAddress;
+            else { _inputError = matches.Count == 0 ? "No node matches that name. Use the format AA:BB:CC:DD:EE:FF for a MAC." : $"{matches.Count} nodes match – be more specific or pick one from the list."; return; }
+        }
+
+        if (!Nodes.Any(n => n.MacAddress.Equals(mac, StringComparison.OrdinalIgnoreCase)))
+        {
+            _inputError = $"{mac} is not part of the mesh.";
+            return;
+        }
+        await OnTrack.InvokeAsync(mac);
+    }
+}
