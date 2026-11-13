@@ -14,5 +14,6 @@ if (!apiBase.EndsWith('/')) apiBase += "/";
 builder.Services.AddScoped(_ => new HttpClient { BaseAddress = new Uri(apiBase) });
 builder.Services.AddScoped<GatewayApiClient>();
 builder.Services.AddSingleton<ToastService>();
+builder.Services.AddSingleton<UiState>();                // Part 3: keeps filters/selection while switching pillars
 
 await builder.Build().RunAsync();
