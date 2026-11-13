@@ -2,6 +2,8 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using SmartX.Shared.Commands;
+using SmartX.Shared.History;
+using SmartX.Shared.Mesh;
 using SmartX.Shared.Models;
 using SmartX.Shared.Topology;
 
@@ -185,12 +187,67 @@ public sealed class GatewayApiClient(HttpClient http)
 
     public Task<List<SuggestedAction>?> GetSuggestionsAsync(int take = 5, CancellationToken ct = default) =>
         http.GetFromJsonAsync<List<SuggestedAction>>($"api/suggestions?take={take}", Json, ct);
+
+    /// <summary>Part 3 feedback fix — tell the predictive engine whether a suggestion was useful.</summary>
+    public async Task<ApiResult<SuggestionFeedbackResult>> SendSuggestionFeedbackAsync(string ruleKey, SuggestionVerdict verdict, CancellationToken ct = default)
+    {
+        var resp = await http.PostAsJsonAsync("api/suggestions/feedback", new SuggestionFeedbackRequest { RuleKey = ruleKey, Verdict = verdict }, Json, ct);
+        return await ApiResult<SuggestionFeedbackResult>.FromAsync(resp, ct);
+    }
+
+    // ---------------------------------------------------------------- PART 3 — Network Topology & Mesh Routing
+    public Task<MeshSnapshot?> GetMeshAsync(SpanningTreeAlgorithm algorithm = SpanningTreeAlgorithm.Prim, CancellationToken ct = default) =>
+        http.GetFromJsonAsync<MeshSnapshot>($"api/mesh?algorithm={algorithm}", Json, ct);
+
+    public async Task<ApiResult<RouteResult>> GetRouteAsync(string mac, CancellationToken ct = default) =>
+        await ApiResult<RouteResult>.FromAsync(await http.GetAsync($"api/mesh/route/{Uri.EscapeDataString(mac)}", ct), ct);
+
+    public async Task<ApiResult<ReachabilityResult>> GetReachabilityAsync(string? subnet = null, string? root = null, CancellationToken ct = default)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(subnet)) parts.Add($"subnet={Uri.EscapeDataString(subnet)}");
+        if (!string.IsNullOrWhiteSpace(root)) parts.Add($"root={Uri.EscapeDataString(root)}");
+        var url = parts.Count == 0 ? "api/mesh/reachability" : $"api/mesh/reachability?{string.Join("&", parts)}";
+        return await ApiResult<ReachabilityResult>.FromAsync(await http.GetAsync(url, ct), ct);
+    }
+
+    public Task<SpanningTreeReport?> GetSpanningTreeReportAsync(SpanningTreeAlgorithm algorithm, int steps = 12, CancellationToken ct = default) =>
+        http.GetFromJsonAsync<SpanningTreeReport>($"api/mesh/spanning-tree?algorithm={algorithm}&steps={steps}", Json, ct);
+
+    public async Task<ApiResult<NodeStateChange>> FailNodeAsync(string mac, CancellationToken ct = default) =>
+        await ApiResult<NodeStateChange>.FromAsync(await http.PostAsync($"api/mesh/nodes/{Uri.EscapeDataString(mac)}/fail", null, ct), ct);
+
+    public async Task<ApiResult<NodeStateChange>> RestoreNodeAsync(string mac, CancellationToken ct = default) =>
+        await ApiResult<NodeStateChange>.FromAsync(await http.PostAsync($"api/mesh/nodes/{Uri.EscapeDataString(mac)}/restore", null, ct), ct);
+
+    public async Task<ApiResult<NodeStateChange>> FailBusiestAsync(CancellationToken ct = default) =>
+        await ApiResult<NodeStateChange>.FromAsync(await http.PostAsync("api/mesh/fail-busiest", null, ct), ct);
+
+    public async Task<ApiResult<RestoreAllResult>> RestoreAllAsync(CancellationToken ct = default) =>
+        await ApiResult<RestoreAllResult>.FromAsync(await http.PostAsync("api/mesh/restore-all", null, ct), ct);
+
+    /// <summary>AVL range query for one sensor's history. Times are sent as ISO 8601 with their offset.</summary>
+    public async Task<ApiResult<HistoryQueryResult>> GetHistoryRangeAsync(string mac, DateTimeOffset from, DateTimeOffset to,
+        int skip = 0, int take = 25, bool newestFirst = true, int bucketMinutes = 60, bool compare = true, CancellationToken ct = default)
+    {
+        var url = $"api/history/{Uri.EscapeDataString(mac)}?from={Uri.EscapeDataString(from.ToString("o"))}&to={Uri.EscapeDataString(to.ToString("o"))}" +
+                  $"&skip={skip}&take={take}&order={(newestFirst ? "desc" : "asc")}&bucketMinutes={bucketMinutes}&compare={(compare ? "true" : "false")}";
+        return await ApiResult<HistoryQueryResult>.FromAsync(await http.GetAsync(url, ct), ct);
+    }
+
+    public Task<HistoryIndexStats?> GetHistoryStatsAsync(CancellationToken ct = default) =>
+        http.GetFromJsonAsync<HistoryIndexStats>("api/history/stats", Json, ct);
+
+    public Task<HistoryBenchmarkResult?> RunHistoryBenchmarkAsync(int points, int queries = 200, double windowHours = 2, CancellationToken ct = default) =>
+        http.GetFromJsonAsync<HistoryBenchmarkResult>(
+            $"api/history/benchmark?points={points}&queries={queries}&windowHours={windowHours.ToString(System.Globalization.CultureInfo.InvariantCulture)}", Json, ct);
 }
 
 // ---------------------------------------------------------------------------
 // Client-side DTOs for anonymous API payloads
 // ---------------------------------------------------------------------------
-public sealed class HealthInfo { public string Status { get; set; } = ""; public string Service { get; set; } = ""; public string Runtime { get; set; } = ""; public int Sensors { get; set; } public long PacketsIngested { get; set; } public int Devices { get; set; } public int TelemetryQueueDepth { get; set; } public int PendingCriticalAlerts { get; set; } public int ActiveFaults { get; set; } public DateTimeOffset Utc { get; set; } }
+public sealed class HealthInfo { public string Status { get; set; } = ""; public string Service { get; set; } = ""; public string Runtime { get; set; } = ""; public int Sensors { get; set; } public long PacketsIngested { get; set; } public int Devices { get; set; } public int TelemetryQueueDepth { get; set; } public int PendingCriticalAlerts { get; set; } public int ActiveFaults { get; set; } public int MeshNodes { get; set; } public int MeshOnline { get; set; } public int MeshDown { get; set; } public int MeshIsolated { get; set; } public long HistoryReadings { get; set; } public DateTimeOffset Utc { get; set; } }
+public sealed class RestoreAllResult { public HealingEvent? Healing { get; set; } }
 public sealed class RaiseAlertResult { public bool Accepted { get; set; } public bool DuplicateSuppressed { get; set; } public Guid? AlertId { get; set; } public int PendingCriticalAlerts { get; set; } }
 public sealed class PagedResult<T> { public int Total { get; set; } public int Page { get; set; } public int PageSize { get; set; } public List<T> Items { get; set; } = new(); }
 public sealed class UploadResult { public List<AttachmentInfo> Saved { get; set; } = new(); public List<RejectedFile> Rejected { get; set; } = new(); }
