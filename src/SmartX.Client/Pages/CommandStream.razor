@@ -1,6 +1,7 @@
 @page "/command-stream"
 @inject GatewayApiClient Api
 @inject ToastService Toast
+@inject UiState Ui
 @implements IDisposable
 
 <PageTitle>Real-Time Command Stream · Smart-X</PageTitle>
@@ -107,7 +108,10 @@
                                 <div class="why">@suggestion.Rationale</div>
                                 <div class="trigger">@TriggerText(suggestion)</div>
                             </div>
-                            <button class="btn sm primary" @onclick="() => AcceptSuggestion(suggestion)" disabled="@_busy">@AcceptLabel(suggestion)</button>
+                            <div class="feedback">
+                                <button class="btn sm primary" @onclick="() => AcceptSuggestion(suggestion)" disabled="@_busy" title="Do it – and tell the engine this suggestion was useful">@AcceptLabel(suggestion)</button>
+                                <button class="btn sm" @onclick="() => DismissSuggestion(suggestion)" disabled="@_busy" title="Not useful – hide for 30 min and lower its confidence">✕ Dismiss</button>
+                            </div>
                         </div>
                     }
                 </div>
@@ -382,7 +386,15 @@
     // ------------------------------------------------------------------ lifecycle
     protected override async Task OnInitializedAsync()
     {
+        // Part 3 (feedback fix): restore the operator's filters and selections from before they switched pillars.
+        var saved = Ui.CommandStream;
+        _filter = saved.Filter;
+        _search = saved.Search;
+        _paused = saved.Paused;
+        _timelineMac = saved.TimelineMac;
+        _simMac = saved.SimulatorMac;
         await LoadSensorsAsync();
+        if (!string.IsNullOrEmpty(_timelineMac)) await LoadTimeline();
         _ = PollAsync();
     }
 
@@ -414,9 +426,11 @@
         try
         {
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            var first = true;          // always load once, even when the page was left paused
             do
             {
-                if (!_paused) await RefreshAsync();
+                if (!_paused || first) await RefreshAsync();
+                first = false;
             } while (await timer.WaitForNextTickAsync(_cts.Token));
         }
         catch (OperationCanceledException)
@@ -789,8 +803,29 @@
         await RefreshAsync();
     }
 
+    /// <summary>Part 3 feedback fix: operator says a suggestion was not useful.</summary>
+    private async Task DismissSuggestion(SuggestedAction suggestion)
+    {
+        await SendFeedback(suggestion, SuggestionVerdict.Dismissed);
+        await RefreshAsync();
+    }
+
+    private async Task SendFeedback(SuggestedAction suggestion, SuggestionVerdict verdict)
+    {
+        if (string.IsNullOrEmpty(suggestion.RuleKey)) return;
+        try
+        {
+            var r = await Api.SendSuggestionFeedbackAsync(suggestion.RuleKey, verdict, _cts.Token);
+            if (r.Success && verdict == SuggestionVerdict.Dismissed) Toast.Info("Suggestion dismissed", r.Value?.Message ?? "");
+            else if (!r.Success) Toast.Error("Feedback not recorded", r.Error);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Toast.Error("API unreachable", ex.Message); }
+    }
+
     private async Task AcceptSuggestion(SuggestedAction suggestion)
     {
+        await SendFeedback(suggestion, SuggestionVerdict.Accepted);   // reinforce the rule behind it
         var device = _snapshot?.Devices.FirstOrDefault(d => d.MacAddress.Equals(suggestion.MacAddress, StringComparison.OrdinalIgnoreCase));
 
         if (suggestion.Kind == SuggestionKind.IssueCommand && suggestion.Command is { } command && device is not null)
@@ -836,7 +871,9 @@
     };
 
     private static string TriggerText(SuggestedAction s) =>
-        s.Support > 0 ? $"{s.Kind} · {s.Trigger} · seen {s.Support}×" : $"{s.Kind} · {s.Trigger}";
+        s.Support > 0
+            ? $"{s.Kind} · {s.Trigger} · seen {s.Support}× · recency-weighted {s.EffectiveSupport:0.0}"
+            : $"{s.Kind} · {s.Trigger}";
 
     private static string JumpText(CriticalAlert a) =>
         $"⚡ processed {(a.LatencyMs is { } ms ? $"{ms:0} ms" : "–")} after arrival, ahead of {a.QueuedAheadAtProcess} queued packet(s)";
@@ -860,6 +897,12 @@
 
     public void Dispose()
     {
+        var saved = Ui.CommandStream;
+        saved.Filter = _filter;
+        saved.Search = _search;
+        saved.Paused = _paused;
+        saved.TimelineMac = _timelineMac;
+        saved.SimulatorMac = _simMac;
         // Cancel only: in-flight tasks may still read _cts.Token, which throws once the source is disposed.
         _cts.Cancel();
         _searchCts?.Cancel();
