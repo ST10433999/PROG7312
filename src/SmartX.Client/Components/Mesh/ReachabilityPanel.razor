@@ -1,0 +1,132 @@
+@* Part 3 — BFS from the gateway or a subnet router: who is connected, who is down, and where cut-off devices can hop. *@
+
+<div class="card">
+    <div class="card-head">
+        <h2>🔎 Subnet reachability (BFS)</h2>
+        <small class="muted">breadth-first search, level by level</small>
+    </div>
+
+    <div class="actions" style="margin-top:0">
+        <select @bind="_scope" @bind:after="ScopeSelected" aria-label="Search scope">
+            <option value="">Gateway – whole mesh</option>
+            @foreach (var subnet in Subnets)
+            {
+                <option value="@subnet">@subnet router – @subnet only</option>
+            }
+        </select>
+        <button class="btn sm primary" @onclick="Run" disabled="@_loading">@if (_loading) { <span class="spinner"></span> } Run BFS</button>
+    </div>
+
+    @if (_error is not null)
+    {
+        <div class="alert error">@_error</div>
+    }
+    else if (_result is null)
+    {
+        <div class="empty">Pick the gateway or a subnet and run the search. Take a router offline first to see the cut-off devices and where they can hop.</div>
+    }
+    else
+    {
+        <div class="bfs-summary">
+            <span>from <b>@_result.RootName</b></span>
+            <span class="ok">✔ <b>@_result.Reached</b> / @_result.InScope reached</span>
+            <span class="bad">✖ <b>@_result.Down.Count</b> down</span>
+            <span class="warn">⚠ <b>@_result.CutOff.Count</b> cut off</span>
+            <span class="muted">@_result.ElapsedMicroseconds.ToString("0.#") µs</span>
+        </div>
+
+        @if (_result.CutOff.Count > 0)
+        {
+            <h3>Where cut-off devices can hop</h3>
+            <div class="cutoff-list">
+                @foreach (var c in _result.CutOff.Take(12))
+                {
+                    <div class="cutoff" @key="c.MacAddress">
+                        <a href="javascript:void(0)" @onclick="() => OnSelect.InvokeAsync(c.MacAddress)"><b>@c.Name</b></a>
+                        <span class="muted">@c.Subnet</span>
+                        <div>@c.Advice</div>
+                    </div>
+                }
+                @if (_result.CutOff.Count > 12) { <small class="muted">…and @(_result.CutOff.Count - 12) more</small> }
+            </div>
+        }
+
+        @if (_result.Down.Count > 0)
+        {
+            <h3>Down</h3>
+            <div class="chip-cloud">
+                @foreach (var d in _result.Down)
+                {
+                    <span class="chip mesh-@d.Status" @key="d.MacAddress" @onclick="() => OnSelect.InvokeAsync(d.MacAddress)">@d.Name</span>
+                }
+            </div>
+        }
+
+        <h3>Reached, by hop count</h3>
+        <div class="levels">
+            @foreach (var level in _result.Levels)
+            {
+                <details class="level" open="@(level.Hop <= 1)" @key="level.Hop">
+                    <summary><b>Hop @level.Hop</b> <span class="muted">· @level.Nodes.Count device(s)</span></summary>
+                    <div class="chip-cloud">
+                        @foreach (var n in level.Nodes)
+                        {
+                            <span class="chip level-chip @n.Kind" title="@(n.Via is null ? "root" : $"discovered via {n.Via}")" @onclick="() => OnSelect.InvokeAsync(n.MacAddress)">@n.Name</span>
+                        }
+                    </div>
+                </details>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public List<string> Subnets { get; set; } = new();
+    [Parameter] public string Scope { get; set; } = "";
+    [Parameter] public EventCallback<string> ScopeChanged { get; set; }
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+    /// <summary>Bumped by the page after a failure or restore so the panel re-runs its search.</summary>
+    [Parameter] public long Version { get; set; }
+
+    [Inject] private GatewayApiClient Api { get; set; } = default!;
+
+    private ReachabilityResult? _result;
+    private string? _error;
+    private bool _loading;
+    private long _lastVersion = -1;
+    private string _scope = "";
+    private bool _initialised;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!_initialised)
+        {
+            _scope = Scope;                         // restored from UiState by the page
+            _initialised = true;
+        }
+        // Re-run automatically when the mesh changed (failure/restore), once a search has been run.
+        if (_result is not null && Version != _lastVersion)
+            await Run();
+    }
+
+    private async Task ScopeSelected()
+    {
+        await ScopeChanged.InvokeAsync(_scope);
+        await Run();
+    }
+
+    private async Task Run()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            var r = await Api.GetReachabilityAsync(string.IsNullOrEmpty(_scope) ? null : _scope);
+            if (r.Success) _result = r.Value;
+            else _error = r.Error;
+            _lastVersion = Version;
+        }
+        catch (Exception ex) { _error = $"API unreachable: {ex.Message}"; }
+        finally { _loading = false; }
+    }
+}
