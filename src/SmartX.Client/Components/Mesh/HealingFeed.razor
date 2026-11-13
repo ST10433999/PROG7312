@@ -1,0 +1,57 @@
+@* Part 3 — what the mesh did each time it healed itself. *@
+
+<div class="card">
+    <div class="card-head">
+        <h2>🩹 Self-healing log</h2>
+        <small class="muted">MST rebuilt whenever a node fails, goes silent or comes back</small>
+    </div>
+    @if (Events.Count == 0)
+    {
+        <div class="empty">No healing events yet. Use <b>Fail busiest relay</b> or <b>Simulate failure</b> on a node. The Part 1 heartbeat also takes silent sensors out of the mesh on its own.</div>
+    }
+    else
+    {
+        <div class="healing">
+            @foreach (var e in Events)
+            {
+                <details class="heal" @key="e.At">
+                    <summary>
+                        <span class="ts">@e.At.ToLocalTime().ToString("HH:mm:ss")</span>
+                        <span class="trigger">@e.Trigger</span>
+                        <span class="badges">
+                            @if (e.Rerouted > 0) { <span class="chip rerouted">↻ @e.Rerouted re-routed</span> }
+                            @if (e.NewlyIsolated.Count > 0) { <span class="chip mesh-Isolated">⚠ @e.NewlyIsolated.Count isolated</span> }
+                            @if (e.Reconnected.Count > 0) { <span class="chip mesh-Online">✔ @e.Reconnected.Count reconnected</span> }
+                            <span class="muted">@EnergyDelta(e)</span>
+                        </span>
+                    </summary>
+                    @if (e.Changes.Count > 0)
+                    {
+                        <ul>
+                            @foreach (var c in e.Changes.Take(8))
+                            {
+                                <li><a href="javascript:void(0)" @onclick="() => OnSelect.InvokeAsync(c.MacAddress)">@c.Name</a>: @(c.OldNextHop ?? "–") → <b>@(c.NewNextHop ?? "–")</b></li>
+                            }
+                            @if (e.Changes.Count > 8) { <li class="muted">…and @(e.Changes.Count - 8) more</li> }
+                        </ul>
+                    }
+                    @if (e.NewlyIsolated.Count > 0)
+                    {
+                        <div class="muted">Isolated: @string.Join(", ", e.NewlyIsolated.Take(10))</div>
+                    }
+                </details>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public List<HealingEvent> Events { get; set; } = new();
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+
+    private static string EnergyDelta(HealingEvent e)
+    {
+        var d = e.EnergyAfterMicroJoules - e.EnergyBeforeMicroJoules;
+        return Math.Abs(d) < 0.05 ? "" : $"MST {(d > 0 ? "+" : "−")}{Math.Abs(d):N0} µJ";
+    }
+}
