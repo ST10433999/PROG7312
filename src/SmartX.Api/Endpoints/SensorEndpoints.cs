@@ -64,6 +64,7 @@ public static class SensorEndpoints
             if (s is null) return Results.NotFound();
             state.Sensors.TryRemove(s.MacAddress, out _);
             state.Channels.TryRemove(s.MacAddress, out _);
+            state.HistoryIndex.Remove(s.MacAddress);       // Part 3: drop its AVL history tree too
             return Results.NoContent();
         });
 

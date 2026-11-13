@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using SmartX.Api.History;
 using SmartX.Shared.Collections;
 using SmartX.Shared.Models;
 using SmartX.Shared.Telemetry;
@@ -25,6 +26,9 @@ public sealed class GatewayState
     public HistoricalBatchStore<bool> ActuatorHistory { get; } = new();
 
     public DeploymentNode Topology { get; set; } = new("Facility A", "Facility");
+
+    /// <summary>Part 3 — every reading (seeded, archived and live) indexed per sensor in an AVL tree for range queries.</summary>
+    public TelemetryHistoryIndex HistoryIndex { get; } = new();
 
     private readonly List<TriageItem> _triage = new();
     private readonly object _triageLock = new();
@@ -126,9 +130,9 @@ public sealed class GatewayState
         {
             switch (channel)
             {
-                case NodeChannel<float> f when f.Window.Latest is { } p: _pendingFloat.Add(p); break;
-                case NodeChannel<int> i when i.Window.Latest is { } p: _pendingInt.Add(p); break;
-                case NodeChannel<bool> b when b.Window.Latest is { } p: _pendingBool.Add(p); break;
+                case NodeChannel<float> f when f.Window.Latest is { } p: _pendingFloat.Add(p); HistoryIndex.Record(p.MacAddress, p.Timestamp, p.Value, p.Unit); break;
+                case NodeChannel<int> i when i.Window.Latest is { } p: _pendingInt.Add(p); HistoryIndex.Record(p.MacAddress, p.Timestamp, p.Value, p.Unit); break;
+                case NodeChannel<bool> b when b.Window.Latest is { } p: _pendingBool.Add(p); HistoryIndex.Record(p.MacAddress, p.Timestamp, p.Value ? 1 : 0); break;
             }
             if (_pendingFloat.Count + _pendingInt.Count + _pendingBool.Count >= PendingBatchSize)
                 FlushPendingUnsafe();
