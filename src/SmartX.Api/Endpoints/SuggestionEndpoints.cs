@@ -33,7 +33,9 @@ public static class SuggestionEndpoints
         {
             var errors = SensorEndpoints.ValidateModel(req);
             if (errors.Count > 0) return Results.ValidationProblem(errors);
-            return Results.Ok(engine.Feedback(req.RuleKey, req.Verdict));
+            return engine.Feedback(req.RuleKey, req.Verdict) is { } result
+                ? Results.Ok(result)
+                : Results.BadRequest(new Microsoft.AspNetCore.Mvc.ProblemDetails { Title = "Unknown suggestion rule key.", Status = 400 });
         }).WithSummary("Accept or dismiss a suggestion. Accepting reinforces the rule; dismissing halves its weight and snoozes it for 30 minutes.");
 
         return api;

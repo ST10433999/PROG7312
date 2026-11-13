@@ -81,8 +81,10 @@ public class PredictiveEngineFeedbackTests
         rig.Episode(respond: false);
         rig.Now -= TimeSpan.FromMinutes(14);
 
+        Assert.Null(rig.Engine.Feedback("not-a-rule", SuggestionVerdict.Dismissed));   // keys the engine never issued are rejected
+
         var first = rig.PumpSuggestion()!;
-        var dismissed = rig.Engine.Feedback(first.RuleKey, SuggestionVerdict.Dismissed);
+        var dismissed = rig.Engine.Feedback(first.RuleKey, SuggestionVerdict.Dismissed)!;
         Assert.NotNull(dismissed.SnoozedUntil);
         Assert.True(dismissed.ConfidenceFactor < 1);
         Assert.Null(rig.PumpSuggestion());                        // hidden while snoozed
@@ -93,7 +95,7 @@ public class PredictiveEngineFeedbackTests
         var again = rig.PumpSuggestion()!;
         Assert.True(again.Confidence < first.Confidence);
 
-        var accepted = rig.Engine.Feedback(again.RuleKey, SuggestionVerdict.Accepted);
+        var accepted = rig.Engine.Feedback(again.RuleKey, SuggestionVerdict.Accepted)!;
         Assert.True(accepted.RuleWeight > dismissed.RuleWeight);
         Assert.Null(rig.PumpSuggestion());                        // handled for this occurrence
     }

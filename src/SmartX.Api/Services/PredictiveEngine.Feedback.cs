@@ -20,12 +20,30 @@ public sealed partial class PredictiveEngine
     private readonly Dictionary<string, DateTimeOffset> _snoozedUntil = new(StringComparer.Ordinal);
     private (long Accepted, long Dismissed) _feedbackTotals;
 
-    /// <summary>Applies an operator verdict to the rule behind a suggestion.</summary>
-    public SuggestionFeedbackResult Feedback(string ruleKey, SuggestionVerdict verdict)
+    /// <summary>Most rule keys the feedback table keeps; the weakest are pruned first.</summary>
+    public const int MaxFeedbackEntries = 2_000;
+
+    /// <summary>True for keys the engine itself hands out on suggestions (rule|…, insight|…, fault|…).</summary>
+    public static bool IsKnownRuleKey(string? ruleKey) =>
+        !string.IsNullOrWhiteSpace(ruleKey) &&
+        (ruleKey.StartsWith("rule|", StringComparison.Ordinal) && SplitRule(ruleKey).Action.Length > 0
+         || ruleKey.StartsWith("insight|", StringComparison.Ordinal)
+         || ruleKey.StartsWith("fault|", StringComparison.Ordinal));
+
+    /// <summary>Applies an operator verdict to the rule behind a suggestion. Returns null for a key the engine never issued.</summary>
+    public SuggestionFeedbackResult? Feedback(string ruleKey, SuggestionVerdict verdict)
     {
+        if (!IsKnownRuleKey(ruleKey)) return null;
         var now = Clock();
         lock (_lock)
         {
+            if (!_feedback.ContainsKey(ruleKey) && _feedback.Count >= MaxFeedbackEntries)
+            {
+                // Bounded memory: drop the entry with the least (decayed) feedback before adding a new one.
+                var weakest = _feedback.MinBy(f => f.Value.Accepted.ValueAt(now, HalfLife) + f.Value.Dismissed.ValueAt(now, HalfLife));
+                _feedback.Remove(weakest.Key);
+            }
+
             if (!_feedback.TryGetValue(ruleKey, out var record))
                 _feedback[ruleKey] = record = new FeedbackRecord();
 
