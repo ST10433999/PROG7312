@@ -1,0 +1,122 @@
+@* Part 3 — "under the hood": how the MST was built, and how the AVL index scales against a linear scan. *@
+
+<div class="card">
+    <div class="card-head">
+        <h2>🧮 Under the hood</h2>
+        <div class="tabs">
+            <button class="btn sm @(_tab == "mst" ? "on" : "")" @onclick='() => _tab = "mst"'>Spanning tree</button>
+            <button class="btn sm @(_tab == "avl" ? "on" : "")" @onclick='() => _tab = "avl"'>AVL benchmark</button>
+        </div>
+    </div>
+
+    @if (_tab == "mst")
+    {
+        <div class="actions" style="margin-top:0">
+            <button class="btn sm" @onclick="LoadTree" disabled="@_loadingTree">@if (_loadingTree) { <span class="spinner"></span> } Show how @Algorithm built the tree</button>
+        </div>
+        @if (_tree is not null)
+        {
+            <dl class="kv">
+                <dt>Algorithm</dt><dd>@_tree.Algorithm · @_tree.Complexity</dd>
+                <dt>Tree</dt><dd>@_tree.TreeLinks links · @_tree.TotalEnergyMicroJoules.ToString("N1") µJ total</dd>
+                <dt>Cross-check</dt><dd>@(_tree.Algorithm == SpanningTreeAlgorithm.Prim ? "Kruskal" : "Prim") on the same graph: @_tree.OtherAlgorithmEnergyMicroJoules.ToString("N1") µJ @(Math.Abs(_tree.OtherAlgorithmEnergyMicroJoules - _tree.TotalEnergyMicroJoules) < 0.05 ? "✔ identical" : "✖ differs")</dd>
+                <dt>Per round</dt><dd>@RoundText</dd>
+                <dt>Work</dt><dd>@_tree.Operations.ToString("N0") @(_tree.Algorithm == SpanningTreeAlgorithm.Prim ? "heap push/pop operations" : "links examined by union–find") · @_tree.ComputeMicroseconds.ToString("N0") µs</dd>
+            </dl>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>#</th><th>Link accepted</th><th>µJ</th><th>Running total</th></tr></thead>
+                    <tbody>
+                        @foreach (var step in _tree.FirstSteps)
+                        {
+                            <tr><td>@step.Step</td><td>@step.From ↔ @step.To</td><td class="mono">@step.EnergyMicroJoules.ToString("0.#")</td><td class="mono">@step.RunningTotal.ToString("N1")</td></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <small class="muted">
+                @(_tree.Algorithm == SpanningTreeAlgorithm.Prim
+                    ? "Prim grows outward from the gateway: the PoE backbone links (5 µJ) come first, then the cheapest radio link that reaches a new node."
+                    : "Kruskal takes links in global order of cost and skips any that would close a cycle, so the tree grows as many fragments that merge.")
+            </small>
+        }
+    }
+    else
+    {
+        <div class="actions" style="margin-top:0">
+            <select @bind="_points" aria-label="Benchmark size">
+                <option value="100000">100 000 readings</option>
+                <option value="500000">500 000 readings</option>
+                <option value="1000000">1 000 000 readings</option>
+                <option value="2000000">2 000 000 readings</option>
+            </select>
+            <button class="btn sm primary" @onclick="RunBenchmark" disabled="@_loadingBench">@if (_loadingBench) { <span class="spinner"></span> } Run 200 range queries</button>
+        </div>
+        @if (_bench is not null)
+        {
+            <div class="bench">
+                <div class="bench-bar"><span>AVL fetch (all matches)</span><b>@_bench.AvlFetchMicroseconds.ToString("N1") µs</b></div>
+                <div class="bench-bar"><span>AVL count only</span><b>@_bench.AvlCountMicroseconds.ToString("N1") µs</b></div>
+                <div class="bench-bar"><span>AVL min/avg/max</span><b>@_bench.AvlAggregateMicroseconds.ToString("N1") µs</b></div>
+                <div class="bench-bar linear"><span>Linear scan of unsorted list</span><b>@_bench.LinearScanMicroseconds.ToString("N1") µs</b></div>
+            </div>
+            <p>
+                <b>@_bench.Speedup.ToString("0.#")× faster</b> per @_bench.WindowHours-hour window (≈@_bench.AverageMatches.ToString("N0") matches) over @_bench.Points.ToString("N0") readings.
+                Tree height <b>@_bench.TreeHeight</b> (AVL bound @_bench.MaxAvlHeight, a plain BST fed sorted timestamps would be @_bench.Points.ToString("N0") deep),
+                built in @_bench.BuildMilliseconds.ToString("N0") ms with @_bench.Rotations.ToString("N0") rotations. Results identical to the scan: @(_bench.ResultsMatch ? "✔" : "✖").
+            </p>
+        }
+        else
+        {
+            <div class="empty">Builds a fresh AVL tree and an unsorted list holding the same readings, then times the same 2-hour range queries on both.</div>
+        }
+    }
+    @if (_error is not null) { <div class="alert error">@_error</div> }
+</div>
+
+@code {
+    [Parameter] public SpanningTreeAlgorithm Algorithm { get; set; }
+    [Parameter] public long Version { get; set; }
+    /// <summary>Live mesh statistics (for the aggregated vs per-packet energy comparison).</summary>
+    [Parameter] public MeshStats? Stats { get; set; }
+
+    private string RoundText => Stats is not { } s ? "–" :
+        $"aggregated: MST {s.TreeEnergyMicroJoules / 1000:0.0} mJ vs shortest-path tree {s.ShortestPathTreeEnergyMicroJoules / 1000:0.0} mJ · " +
+        $"un-aggregated: MST routes {s.TreeRoutesEnergyMicroJoules / 1000:0.0} mJ vs Dijkstra routes {s.ShortestRoutesEnergyMicroJoules / 1000:0.0} mJ";
+    [Inject] private GatewayApiClient Api { get; set; } = default!;
+
+    private string _tab = "mst";
+    private SpanningTreeReport? _tree;
+    private HistoryBenchmarkResult? _bench;
+    private int _points = 500_000;
+    private bool _loadingTree, _loadingBench;
+    private string? _error;
+    private (SpanningTreeAlgorithm, long)? _loadedFor;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Keep the report in step with the algorithm toggle and with healing events, once it has been opened.
+        if (_tree is not null && _loadedFor != (Algorithm, Version)) await LoadTree();
+    }
+
+    private async Task LoadTree()
+    {
+        _loadingTree = true;
+        try
+        {
+            _tree = await Api.GetSpanningTreeReportAsync(Algorithm, 12);
+            _loadedFor = (Algorithm, Version);
+            _error = null;
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _loadingTree = false; }
+    }
+
+    private async Task RunBenchmark()
+    {
+        _loadingBench = true;
+        try { _bench = await Api.RunHistoryBenchmarkAsync(_points); _error = null; }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _loadingBench = false; }
+    }
+}
