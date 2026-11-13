@@ -1,12 +1,13 @@
 @inherits LayoutComponentBase
 @inject GatewayApiClient Api
+@inject UiState Ui
 @implements IDisposable
 
 <div class="shell">
     <aside class="sidebar">
         <div class="brand">
             <div class="logo">SX</div>
-            <div>Smart-X Gateway<span class="sub">IoT Mesh Ecosystem · Parts 1 &amp; 2</span></div>
+            <div>Smart-X Gateway<span class="sub">IoT Mesh Ecosystem · Parts 1–3</span></div>
         </div>
         <nav class="nav">
             <NavLink href="" Match="NavLinkMatch.All">🏠 <span>Gateway home</span></NavLink>
@@ -14,9 +15,13 @@
             <NavLink href="ingestion/register">➕ <span>Register sensor</span></NavLink>
             <NavLink href="ingestion/sensors">🗂 <span>Sensor registry</span></NavLink>
             <NavLink href="ingestion/data-structures">🧬 <span>Data structures</span></NavLink>
-            <NavLink href="command-stream" Match="NavLinkMatch.All">⚡ <span>Command Stream</span><span class="tag">Part 2</span></NavLink>
+            <NavLink href="command-stream" Match="NavLinkMatch.All">⚡ <span>Command Stream</span>@if (_health is { PendingCriticalAlerts: > 0 } h) { <span class="badge" title="Critical alerts waiting">@h.PendingCriticalAlerts</span> }<span class="tag">Part 2</span></NavLink>
             <NavLink href="command-stream/history">📜 <span>Command history</span></NavLink>
-            <span class="disabled" title="Implemented in the final PoE">🕸 <span>Mesh Topology</span><span class="tag">PoE</span></span>
+            <NavLink href="topology" Match="NavLinkMatch.Prefix">🕸 <span>Mesh Topology</span>@if (_health is { MeshDown: > 0 } m) { <span class="badge" title="Mesh nodes down">@m.MeshDown</span> }<span class="tag">Part 3</span></NavLink>
+            @if (Ui.SelectedSensorMac is { } focus)
+            {
+                <NavLink href="@($"topology/{Uri.EscapeDataString(focus)}")" class="sub-link" title="Last sensor you focused on">↳ <span class="mono">@focus</span></NavLink>
+            }
         </nav>
         <div class="foot">
             <span class="api-dot @(_apiOk is null ? "" : _apiOk == true ? "ok" : "bad")"></span>
@@ -34,10 +39,12 @@
 @code {
     private bool? _apiOk;
     private string _runtime = "";
+    private HealthInfo? _health;
     private readonly CancellationTokenSource _cts = new();
 
     protected override async Task OnInitializedAsync()
     {
+        Ui.Changed += OnUiChanged;
         _ = PollAsync();
         await Task.CompletedTask;
     }
@@ -50,6 +57,7 @@
             try
             {
                 var h = await Api.GetHealthAsync(_cts.Token);
+                _health = h;
                 _apiOk = h?.Status == "ok";
                 _runtime = h?.Runtime.Replace(".NET ", "net") ?? "";
             }
@@ -58,5 +66,7 @@
         } while (await timer.WaitForNextTickAsync(_cts.Token).ConfigureAwait(false) == true && !_cts.IsCancellationRequested);
     }
 
-    public void Dispose() { _cts.Cancel(); _cts.Dispose(); }
+    private void OnUiChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() { Ui.Changed -= OnUiChanged; _cts.Cancel(); _cts.Dispose(); }
 }

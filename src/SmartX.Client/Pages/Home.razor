@@ -13,9 +13,11 @@
 
 @if (_health is not null)
 {
-    <div class="stats" style="max-width:720px">
+    <div class="stats" style="max-width:1100px">
         <div class="stat"><div class="label">Registered sensors</div><div class="value">@_health.Sensors.ToString("N0")</div></div>
         <div class="stat"><div class="label">Packets ingested</div><div class="value">@_health.PacketsIngested.ToString("N0")</div></div>
+        <div class="stat"><div class="label">Mesh nodes online</div><div class="value">@_health.MeshOnline / @_health.MeshNodes</div></div>
+        <div class="stat"><div class="label">Indexed history</div><div class="value">@_health.HistoryReadings.ToString("N0")</div></div>
         <div class="stat"><div class="label">Backend</div><div class="value" style="font-size:1rem">@_health.Runtime</div></div>
     </div>
 }
@@ -39,13 +41,13 @@ else if (_error is not null)
         <p>Dashboard over a <code>Queue&lt;T&gt;</code> ingestion stream, <code>PriorityQueue</code> for critical alerts, <code>Stack&lt;T&gt;</code> command undo, O(1) <code>Dictionary</code> device lookup and a <code>SortedDictionary</code> history timeline. Includes a predictive suggestion engine.</p>
         <span class="cta">Open command stream →</span>
     </a>
-    <div class="pillar disabled" aria-disabled="true" title="Disabled – implemented in the final PoE">
-        <span class="badge">Final PoE · Disabled</span>
+    <a class="pillar enabled" href="topology">
+        <span class="badge">Part 3 · Active</span>
         <div class="icon">🕸</div>
         <h2>Network Topology &amp; Mesh Routing</h2>
-        <p>Visualise mesh hops, route telemetry around failed nodes and balance gateway load. Coming in the final PoE.</p>
-        <span class="cta">Locked</span>
-    </div>
+        <p>The mesh as a graph: BFS reachability per subnet, DFS islands and critical relays, a Prim/Kruskal <b>minimum spanning tree</b> for the most power-efficient routes that heals itself when nodes fail, and an <b>AVL tree</b> for instant historical range queries.</p>
+        <span class="cta">Open mesh topology →</span>
+    </a>
 </div>
 
 @code {
